@@ -4,14 +4,16 @@
 import { useState, useRef, useEffect } from 'react';
 import Peer from 'simple-peer';
 import type { Instance as PeerInstance } from 'simple-peer';
+import QRCode from 'react-qr-code';
 
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste } from 'lucide-react';
+import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste, QrCode } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 
@@ -26,6 +28,11 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
   const [peerCount, setPeerCount] = useState(0);
+  const [currentUrl, setCurrentUrl] = useState('');
+
+  useEffect(() => {
+    setCurrentUrl(window.location.href);
+  }, []);
 
   useEffect(() => {
     inputTextRef.current = inputText;
@@ -96,25 +103,30 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         setConnectionStatus('Connected');
         setPeerCount(newPeerIds.length);
 
+        // --- Handle new peers joining ---
+        const currentPeers = Array.from(peersRef.current.keys());
+        const peersToConnect = newPeerIds.filter((p: string) => p !== peerId.current && !currentPeers.includes(p));
+        peersToConnect.forEach((remotePeerId: string) => {
+            // we are the "initiator" if our ID is alphabetically smaller
+            if(peerId.current > remotePeerId) {
+                connectToPeer(remotePeerId, true);
+            }
+        });
+
         // --- Handle incoming signals ---
         for (const { from, to, signal, type } of signals) {
-            if (type === 'join' && from !== peerId.current) {
-                // A new peer has joined, if we are the initiator, create a new connection
-                if (peerId.current > from) { // Simple initiator election
-                    connectToPeer(from);
+           if (signal && to === peerId.current) {
+                const peer = peersRef.current.get(from);
+                if (peer) {
+                    peer.signal(signal);
+                } else {
+                    // This is an offer from a new peer
+                    connectToPeer(from, false, signal);
                 }
             } else if (type === 'leave' && from !== peerId.current) {
                 if (peersRef.current.has(from)) {
                     peersRef.current.get(from)?.destroy();
                     peersRef.current.delete(from);
-                }
-            } else if (signal && to === peerId.current) {
-                const peer = peersRef.current.get(from);
-                if (peer) {
-                    peer.signal(signal);
-                } else if (signal.type === 'offer') {
-                    // We have an offer from a new peer
-                    connectToPeer(from, signal);
                 }
             }
         }
@@ -126,10 +138,9 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     }, 2000);
   };
 
-  const connectToPeer = (remotePeerId: string, offer?: any) => {
+  const connectToPeer = (remotePeerId: string, isInitiator: boolean, offer?: any) => {
     if (peersRef.current.has(remotePeerId)) return;
 
-    const isInitiator = !offer;
     const newPeer = new Peer({ initiator: isInitiator, trickle: false });
     peersRef.current.set(remotePeerId, newPeer);
 
@@ -147,9 +158,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('connect', () => {
-      // Connection established
-      setPeerCount(prev => prev + 1); // This might be slightly off, but GET corrects it.
-      newPeer.send(inputTextRef.current); // Send current clipboard content on connect
+      newPeer.send(inputTextRef.current);
     });
 
     newPeer.on('data', (data) => {
@@ -159,7 +168,6 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
     newPeer.on('close', () => {
       peersRef.current.delete(remotePeerId);
-      setPeerCount(peersRef.current.size);
     });
 
     newPeer.on('error', (err) => {
@@ -167,7 +175,6 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
       if (peersRef.current.has(remotePeerId)) {
         peersRef.current.get(remotePeerId)?.destroy();
         peersRef.current.delete(remotePeerId);
-        setPeerCount(peersRef.current.size);
       }
     });
 
@@ -207,6 +214,17 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                     <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
                       Firext
                        <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
+                       <Popover>
+                            <PopoverTrigger asChild>
+                                <Button variant="ghost" size="icon" className="h-6 w-6" disabled={!currentUrl}>
+                                    <QrCode className="h-4 w-4" />
+                                    <span className="sr-only">Show QR Code</span>
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-auto p-2 bg-white">
+                                {currentUrl && <QRCode value={currentUrl} size={128} />}
+                            </PopoverContent>
+                        </Popover>
                     </CardTitle>
                     <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
                 </div>
