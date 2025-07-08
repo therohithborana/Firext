@@ -179,11 +179,11 @@ export function ClipboardCard() {
 
         if (data?.offer) {
             setupPeer(false, code);
-            setTimeout(() => {
-                if (peerRef.current && !peerRef.current.destroyed) {
-                    peerRef.current.signal(data.offer);
-                }
-            }, 100);
+            // The peer instance is created and its listeners attached synchronously within setupPeer.
+            // We can and should signal it immediately without a timeout.
+            if (peerRef.current && !peerRef.current.destroyed) {
+                peerRef.current.signal(data.offer);
+            }
         } else {
             toast({ variant: 'destructive', title: 'Room not found', description: 'Please check the code and try again.' });
             setConnectionStatus('Error');
