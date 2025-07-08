@@ -33,6 +33,7 @@ export function ClipboardCard() {
   
   const [roomCode, setRoomCode] = useState('');
   const [inputRoomCode, setInputRoomCode] = useState('');
+  const [isInitiator, setIsInitiator] = useState(false);
 
   const stopPolling = () => {
     if (pollingIntervalRef.current) {
@@ -64,6 +65,7 @@ export function ClipboardCard() {
     setRoomCode('');
     setInputRoomCode('');
     setConnectionStatus('Disconnected');
+    setIsInitiator(false);
     if (!keepSheetOpen) {
       setIsSheetOpen(false);
     }
@@ -73,6 +75,8 @@ export function ClipboardCard() {
     if (peerRef.current) {
       peerRef.current.destroy();
     }
+    
+    setIsInitiator(initiator);
 
     const newPeer = new Peer({ initiator, trickle: false });
     peerRef.current = newPeer;
@@ -133,10 +137,10 @@ export function ClipboardCard() {
       }
 
       // If the close was initiated by the other peer
-      if (initiator) {
+      if (isInitiator) {
         toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
         setConnectionStatus('Waiting...');
-        setupPeer(true, currentRoomCode); // Re-create the peer to wait for a new connection
+        setupPeer(true, roomCode); // Re-create the peer to wait for a new connection
       } else {
         // We are the joiner, and the host disconnected.
         toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
@@ -190,7 +194,7 @@ export function ClipboardCard() {
       toast({ variant: 'destructive', title: 'Please enter a room code.' });
       return;
     }
-
+    setRoomCode(code);
     setConnectionStatus('Connecting...');
     try {
         const res = await fetch(`/api/webrtc/signal?room=${code}`);
@@ -295,6 +299,9 @@ export function ClipboardCard() {
                       <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
                         Smart Clipboard
                         <Badge variant={getStatusBadgeVariant()} className="text-xs">{connectionStatus}</Badge>
+                         {connectionStatus === 'Connected' && roomCode && (
+                            <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
+                         )}
                       </CardTitle>
                       <CardDescription>An intelligent, peer-to-peer clipboard with AI suggestions.</CardDescription>
                   </div>
@@ -351,10 +358,17 @@ export function ClipboardCard() {
           </div>
           
            {connectionStatus === 'Connected' ? (
-              <Button onClick={handleDisconnect} variant="destructive" className="gap-2">
-                <WifiOff />
-                Disconnect
-              </Button>
+                isInitiator ? (
+                    <Button onClick={handleDisconnect} variant="destructive" className="gap-2">
+                        <WifiOff />
+                        Close Room
+                    </Button>
+                ) : (
+                    <Button onClick={handleDisconnect} variant="outline" className="gap-2">
+                        <WifiOff />
+                        Leave Room
+                    </Button>
+                )
             ) : (
               <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
                 <SheetTrigger asChild>
