@@ -1,9 +1,9 @@
 
 "use client";
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import Peer from 'simple-peer';
-import type { Instance as PeerInstance } from 'simple-peer';
+import type { Instance as PeerInstance, PeerError } from 'simple-peer';
 import QRCode from 'react-qr-code';
 
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -37,6 +37,67 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   useEffect(() => {
     inputTextRef.current = inputText;
   }, [inputText]);
+  
+  const connectToPeer = useCallback((remotePeerId: string, isInitiator: boolean, offer?: any) => {
+    if (peersRef.current.has(remotePeerId)) {
+      const existingPeer = peersRef.current.get(remotePeerId);
+      if (existingPeer && !existingPeer.destroyed) {
+        return; // Already have a live connection
+      }
+    }
+
+    const newPeer = new Peer({ 
+      initiator: isInitiator, 
+      trickle: false,
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' }
+        ]
+      }
+    });
+    peersRef.current.set(remotePeerId, newPeer);
+
+    newPeer.on('signal', async (data) => {
+      // Send signal to the remote peer via the signaling server
+      try {
+        await fetch('/api/webrtc/signal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: roomCode, from: peerId.current, to: remotePeerId, signal: data, type: 'signal' }),
+        });
+      } catch (err) {
+        console.error("Failed to send signal", err);
+      }
+    });
+
+    newPeer.on('connect', () => {
+      // When a new peer connects, send them the current clipboard content
+      newPeer.send(inputTextRef.current);
+    });
+
+    newPeer.on('data', (data) => {
+      const receivedText = data.toString();
+      setInputText(receivedText);
+    });
+
+    newPeer.on('close', () => {
+      peersRef.current.delete(remotePeerId);
+    });
+
+    newPeer.on('error', (err: PeerError) => {
+      console.error(`Peer error with ${remotePeerId}:`, err);
+      if (peersRef.current.has(remotePeerId)) {
+        peersRef.current.get(remotePeerId)?.destroy();
+        peersRef.current.delete(remotePeerId);
+      }
+    });
+
+    if (offer) {
+      newPeer.signal(offer);
+    }
+  }, [roomCode]);
+
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const text = e.target.value;
@@ -73,16 +134,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     setConnectionStatus('Disconnected');
     setPeerCount(0);
   };
-  
-  useEffect(() => {
-    startPolling();
-    
-    // Cleanup on component unmount
-    return () => {
-        disconnect();
-    };
-  }, [roomCode]);
-  
+
   const stopPolling = () => {
     if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
@@ -90,7 +142,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     }
   }
 
-  const startPolling = () => {
+  const startPolling = useCallback(() => {
     stopPolling();
     pollingIntervalRef.current = setInterval(async () => {
       try {
@@ -117,9 +169,9 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         for (const { from, to, signal, type } of signals) {
            if (signal && to === peerId.current) {
                 const peer = peersRef.current.get(from);
-                if (peer) {
+                if (peer && !peer.destroyed) {
                     peer.signal(signal);
-                } else {
+                } else if (!peer) {
                     // This is an offer from a new peer
                     connectToPeer(from, false, signal);
                 }
@@ -136,52 +188,16 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         disconnect();
       }
     }, 2000);
-  };
-
-  const connectToPeer = (remotePeerId: string, isInitiator: boolean, offer?: any) => {
-    if (peersRef.current.has(remotePeerId)) return;
-
-    const newPeer = new Peer({ initiator: isInitiator, trickle: false });
-    peersRef.current.set(remotePeerId, newPeer);
-
-    newPeer.on('signal', async (data) => {
-      // Send signal to the remote peer via the signaling server
-      try {
-        await fetch('/api/webrtc/signal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ room: roomCode, from: peerId.current, to: remotePeerId, signal: data, type: 'signal' }),
-        });
-      } catch (err) {
-        console.error("Failed to send signal", err);
-      }
-    });
-
-    newPeer.on('connect', () => {
-      newPeer.send(inputTextRef.current);
-    });
-
-    newPeer.on('data', (data) => {
-      const receivedText = data.toString();
-      setInputText(receivedText);
-    });
-
-    newPeer.on('close', () => {
-      peersRef.current.delete(remotePeerId);
-    });
-
-    newPeer.on('error', (err) => {
-      console.error('Peer error:', err);
-      if (peersRef.current.has(remotePeerId)) {
-        peersRef.current.get(remotePeerId)?.destroy();
-        peersRef.current.delete(remotePeerId);
-      }
-    });
-
-    if (offer) {
-      newPeer.signal(offer);
-    }
-  };
+  }, [roomCode, connectToPeer]);
+  
+  useEffect(() => {
+    startPolling();
+    
+    // Cleanup on component unmount
+    return () => {
+        disconnect();
+    };
+  }, [startPolling]);
 
 
   const getStatusBadgeVariant = () => {
@@ -252,7 +268,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                 onChange={handleTextChange}
                 placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Your synced clipboard content will appear here...'}
                 rows={10}
-                disabled={connectionStatus !== 'Connected'}
+                disabled={connectionStatus !== 'Connected' && peerCount === 0}
             />
         </div>
       </CardContent>
