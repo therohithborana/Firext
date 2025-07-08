@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from './ui/badge';
 import { cn } from '@/lib/utils';
 import { Label } from './ui/label';
+import { Input } from './ui/input';
 
 type ConnectionStatus = 'Disconnected' | 'Connecting...' | 'Connected' | 'Error';
 
@@ -27,12 +28,40 @@ export function ClipboardCard() {
   const peerRef = useRef<PeerInstance | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Disconnected');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState('create');
 
   // Connection data states
-  const [offer, setOffer] = useState('');
+  const [shareableLink, setShareableLink] = useState('');
   const [answer, setAnswer] = useState('');
   const [pastedOffer, setPastedOffer] = useState('');
   const [pastedAnswer, setPastedAnswer] = useState('');
+
+  useEffect(() => {
+    // This effect runs when the component mounts to check for an offer in the URL
+    const searchParams = new URLSearchParams(window.location.search);
+    const offerParam = searchParams.get('offer');
+
+    if (offerParam && !peerRef.current?.connected) {
+      try {
+        const decodedOffer = atob(offerParam);
+        
+        // Pre-fill the join connection form
+        setActiveTab('join');
+        setPastedOffer(decodedOffer);
+        setIsSheetOpen(true); // Open the connection panel
+
+        // Clean URL to prevent re-triggering on refresh
+        const url = new URL(window.location.href);
+        url.searchParams.delete('offer');
+        window.history.replaceState({}, '', url.toString());
+
+        toast({ title: "Offer link detected!", description: "The connection offer has been pasted for you. Please review and generate an answer." });
+      } catch(e) {
+        console.error("Failed to process offer from URL", e);
+        toast({ variant: 'destructive', title: 'Invalid Offer Link', description: 'The link seems to be malformed.' });
+      }
+    }
+  }, []); // Run only once on mount.
 
   useEffect(() => {
     // Cleanup peer connection on component unmount
@@ -62,7 +91,10 @@ export function ClipboardCard() {
     newPeer.on('signal', (data) => {
       const signalString = JSON.stringify(data);
       if (initiator) {
-        setOffer(signalString);
+        const encodedOffer = btoa(signalString);
+        const url = new URL(window.location.href);
+        url.searchParams.set('offer', encodedOffer);
+        setShareableLink(url.toString());
       } else {
         setAnswer(signalString);
       }
@@ -95,13 +127,14 @@ export function ClipboardCard() {
 
   const resetConnectionState = () => {
     peerRef.current = null;
-    setOffer('');
+    setShareableLink('');
     setAnswer('');
     setPastedOffer('');
     setPastedAnswer('');
+    setActiveTab('create');
   }
 
-  const handleCreateOffer = () => {
+  const handleCreateConnectionLink = () => {
     setupPeer(true);
   };
 
@@ -128,6 +161,10 @@ export function ClipboardCard() {
     } catch(e) {
       toast({ variant: 'destructive', title: 'Invalid Answer', description: 'The pasted answer data is malformed.' });
     }
+  };
+
+  const handleDisconnect = () => {
+    peerRef.current?.destroy();
   };
 
   const handleCopyToClipboard = async (text: string, type: string) => {
@@ -247,66 +284,80 @@ export function ClipboardCard() {
             </Button>
           </div>
           
-          <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
-            <SheetTrigger asChild>
-              <Button>
-                {peerRef.current?.connected ? <WifiOff/> : <Wifi/>}
-                {peerRef.current?.connected ? 'Disconnect' : 'Connect to Peer'}
+           {peerRef.current?.connected ? (
+              <Button onClick={handleDisconnect} variant="destructive">
+                <WifiOff />
+                Disconnect
               </Button>
-            </SheetTrigger>
-            <SheetContent className="w-full sm:max-w-lg">
-              <SheetHeader>
-                <SheetTitle>Peer-to-Peer Connection</SheetTitle>
-                <SheetDescription>
-                   Connect to another device directly without a server. This requires manually copying connection data between devices once.
-                   <br/>
-                   <span className={cn('font-semibold', {
-                      'text-green-500': connectionStatus === 'Connected',
-                      'text-red-500': connectionStatus === 'Error' || connectionStatus === 'Disconnected',
-                      'text-yellow-500': connectionStatus === 'Connecting...'
-                   })}>Status: {connectionStatus}</span>
-                </SheetDescription>
-              </SheetHeader>
-              <div className="py-4">
-                <Tabs defaultValue="create" className="w-full">
-                  <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="create">Create Connection</TabsTrigger>
-                    <TabsTrigger value="join">Join Connection</TabsTrigger>
-                  </TabsList>
-                  <TabsContent value="create" className="space-y-4 pt-4">
-                      <p className="text-sm text-muted-foreground">1. Click the button to generate an offer string.</p>
-                      <Button onClick={handleCreateOffer} disabled={!!offer}>Generate Offer</Button>
-                      {offer && (
-                        <div className="space-y-2">
-                           <Label htmlFor="offer-string">2. Copy this offer and paste it on the other device.</Label>
-                           <div className="flex gap-2">
-                              <Textarea id="offer-string" readOnly value={offer} rows={4} className="text-xs"/>
-                              <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(offer, 'Offer')}><Copy className="w-4 h-4"/></Button>
-                           </div>
-                           <Label htmlFor="answer-input">3. Paste the answer from the other device below.</Label>
-                           <Textarea id="answer-input" value={pastedAnswer} onChange={(e) => setPastedAnswer(e.target.value)} placeholder="Paste answer data here..." rows={4} className="text-xs"/>
-                           <Button onClick={handleCompleteConnection} disabled={!pastedAnswer}>Complete Connection</Button>
-                        </div>
-                      )}
-                  </TabsContent>
-                  <TabsContent value="join" className="space-y-4 pt-4">
-                      <Label htmlFor="paste-offer-input">1. Paste the offer from the first device.</Label>
-                      <Textarea id="paste-offer-input" value={pastedOffer} onChange={(e) => setPastedOffer(e.target.value)} placeholder="Paste offer data here..." rows={4} className="text-xs"/>
-                      <Button onClick={handleAcceptOffer} disabled={!pastedOffer || !!answer}>Generate Answer</Button>
-                      {answer && (
-                         <div className="space-y-2">
-                            <Label htmlFor="answer-string">2. Copy this answer and paste it on the first device.</Label>
-                           <div className="flex gap-2">
-                              <Textarea id="answer-string" readOnly value={answer} rows={4} className="text-xs"/>
-                              <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(answer, 'Answer')}><Copy className="w-4 h-4"/></Button>
-                           </div>
-                         </div>
-                      )}
-                  </TabsContent>
-                </Tabs>
-              </div>
-            </SheetContent>
-          </Sheet>
+            ) : (
+              <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
+                <SheetTrigger asChild>
+                  <Button>
+                    <Wifi />
+                    Connect to Peer
+                  </Button>
+                </SheetTrigger>
+                <SheetContent className="w-full sm:max-w-lg">
+                  <SheetHeader>
+                    <SheetTitle>Peer-to-Peer Connection</SheetTitle>
+                    <SheetDescription>
+                      Connect to another device directly without a server. This requires sharing a link and a code between devices once.
+                      <br/>
+                      <span className={cn('font-semibold', {
+                          'text-green-500': connectionStatus === 'Connected',
+                          'text-red-500': connectionStatus === 'Error' || connectionStatus === 'Disconnected',
+                          'text-yellow-500': connectionStatus === 'Connecting...'
+                      })}>Status: {connectionStatus}</span>
+                    </SheetDescription>
+                  </SheetHeader>
+                  <div className="py-4">
+                    <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="create">Create Connection</TabsTrigger>
+                        <TabsTrigger value="join">Join Connection</TabsTrigger>
+                      </TabsList>
+                      <TabsContent value="create" className="space-y-4 pt-4">
+                          {!shareableLink ? (
+                            <>
+                              <p className="text-sm text-muted-foreground">1. Click the button to generate a shareable connection link.</p>
+                              <Button onClick={handleCreateConnectionLink} disabled={!!shareableLink}>Create Connection Link</Button>
+                            </>
+                          ) : (
+                            <div className='space-y-4'>
+                              <div className="space-y-2">
+                                <Label htmlFor="share-link">2. Copy this link and open it on the other device.</Label>
+                                <div className="flex gap-2">
+                                  <Input id="share-link" readOnly value={shareableLink} className="text-xs"/>
+                                  <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(shareableLink, 'Link')}><Copy className="w-4 h-4"/></Button>
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <Label htmlFor="answer-input">3. Paste the answer from the other device below.</Label>
+                                <Textarea id="answer-input" value={pastedAnswer} onChange={(e) => setPastedAnswer(e.target.value)} placeholder="Paste answer data here..." rows={4} className="text-xs"/>
+                                <Button onClick={handleCompleteConnection} disabled={!pastedAnswer}>Complete Connection</Button>
+                              </div>
+                            </div>
+                          )}
+                      </TabsContent>
+                      <TabsContent value="join" className="space-y-4 pt-4">
+                          <Label htmlFor="paste-offer-input">1. Paste the offer from the first device (or open its link).</Label>
+                          <Textarea id="paste-offer-input" value={pastedOffer} onChange={(e) => setPastedOffer(e.target.value)} placeholder="Offer data will appear here if you use a link..." rows={4} className="text-xs"/>
+                          <Button onClick={handleAcceptOffer} disabled={!pastedOffer || !!answer}>Generate Answer</Button>
+                          {answer && (
+                            <div className="space-y-2">
+                                <Label htmlFor="answer-string">2. Copy this answer and paste it on the first device.</Label>
+                              <div className="flex gap-2">
+                                  <Textarea id="answer-string" readOnly value={answer} rows={4} className="text-xs"/>
+                                  <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(answer, 'Answer')}><Copy className="w-4 h-4"/></Button>
+                              </div>
+                            </div>
+                          )}
+                      </TabsContent>
+                    </Tabs>
+                  </div>
+                </SheetContent>
+              </Sheet>
+            )}
         </CardFooter>
       </Card>
     </>
