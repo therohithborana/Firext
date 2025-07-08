@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import Peer from 'simple-peer';
 import type { Instance as PeerInstance, PeerError } from 'simple-peer';
 import QRCode from 'react-qr-code';
+import Image from 'next/image';
 
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -137,11 +138,9 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   }, [sendChunkedData]);
 
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      peerId.current = Math.random().toString(36).substring(2);
-      setCurrentUrl(window.location.href);
-      setIsMounted(true);
-    }
+    setIsMounted(true);
+    peerId.current = Math.random().toString(36).substring(2);
+    setCurrentUrl(window.location.href);
   }, []);
 
   const connectToPeer = useCallback((remotePeerId: string, isInitiator: boolean, offer?: any) => {
@@ -240,15 +239,13 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
             case 'fullSync':
               setClipboard(currentClipboard => {
                   const { text, images, files } = message.data;
+                  if (!text && (!images || images.length === 0) && (!files || files.length === 0)) {
+                      return currentClipboard;
+                  }
+
                   const newImages = images?.filter((img: ClipboardImage) => !currentClipboard.images.some(i => i.id === img.id)) || [];
                   const newFiles = files?.filter((file: ClipboardFile) => !currentClipboard.files.some(f => f.id === file.id)) || [];
               
-                  const mergedState = {
-                    text: currentClipboard.text || text || '',
-                    images: [...currentClipboard.images, ...newImages],
-                    files: [...currentClipboard.files, ...newFiles],
-                  };
-
                   const isMyStateEmpty = currentClipboard.text === '' && currentClipboard.images.length === 0 && currentClipboard.files.length === 0;
                   if(isMyStateEmpty) {
                      return {
@@ -257,12 +254,12 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                         files: files || [],
                      };
                   }
-
-                  if(text && text !== currentClipboard.text) {
-                     mergedState.text = text;
-                  }
                   
-                  return mergedState;
+                  return {
+                    text: text || currentClipboard.text,
+                    images: [...currentClipboard.images, ...newImages],
+                    files: [...currentClipboard.files, ...newFiles],
+                  };
               });
               break;
             case 'textUpdate':
@@ -278,15 +275,10 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
               setClipboard({ text: '', images: [], files: [] });
               break;
             default:
-              if (typeof message === 'string') {
-                  setClipboard(c => ({...c, text: messageStr, images:[], files:[]}));
-              } else {
-                  console.warn("Received malformed or unhandled message:", message);
-              }
+              console.warn("Received malformed or unhandled message:", message);
           }
         } catch (error) {
-          // Fallback for legacy plain text data
-          setClipboard(c => ({...c, text: messageStr, images:[], files:[]}));
+            console.warn("Could not parse incoming data:", error);
         }
     });
 
@@ -500,7 +492,8 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div>
                 <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
-                  FliqShare
+                   <Image src="/logo.png" alt="FliqShare Logo" width={32} height={32} className="rounded-md" />
+                   FliqShare
                    <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
                    {isMounted && (
                      <Popover>
