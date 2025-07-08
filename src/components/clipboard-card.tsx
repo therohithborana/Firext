@@ -125,25 +125,28 @@ export function ClipboardCard() {
     });
 
     newPeer.on('close', () => {
-      // This 'close' event can be triggered by either peer in the connection.
-      
-      // Case 1: A user manually clicks "Close Room" or "Leave Room".
+      // Case 1: User manually clicks a disconnect/cancel button.
       if (isManuallyDisconnecting.current) {
         isManuallyDisconnecting.current = false; // Reset flag
-        resetConnectionState();
-        toast({ variant: 'destructive', title: 'Connection closed', description: 'You have left the room.' });
+        const wasConnected = connectionStatus === 'Connected';
+        resetConnectionState(!wasConnected); // Keep sheet open if we were just waiting/connecting
+        
+        if (wasConnected) {
+          toast({ variant: 'destructive', title: 'Connection closed', description: 'You have left the room.' });
+        }
         return;
       }
-
-      // Case 2: We are the host (initiator) and the other peer disconnects.
+    
+      // Case 2: Host's peer disconnects because participant left.
       if (isInitiator) {
         toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
         setConnectionStatus('Waiting...');
+        // Manually clear the ref to the closed peer before re-initializing.
+        peerRef.current = null;
         // Re-create the peer to wait for a new connection.
-        // This will generate a new "offer" and post it to the server, clearing any old "answer".
         setupPeer(true, roomCode);
       } else {
-        // Case 3: We are a participant, and the host has disconnected.
+        // Case 3: Participant's peer disconnects because host left.
         toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
         resetConnectionState();
       }
@@ -342,6 +345,9 @@ export function ClipboardCard() {
                                     <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                                     <span>Waiting for peer to join...</span>
                                 </div>
+                                <Button variant="outline" onClick={handleDisconnect} className="w-full mt-4">
+                                  Cancel
+                                </Button>
                             </div>
                         ) : (
                             <div className="space-y-6 animate-in fade-in">
