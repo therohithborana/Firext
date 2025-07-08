@@ -247,17 +247,21 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                     <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
                       Firext
                        <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
-                       <Popover>
-                            <PopoverTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-6 w-6" disabled={!currentUrl}>
-                                    <QrCode className="h-4 w-4" />
-                                    <span className="sr-only">Show QR Code</span>
-                                </Button>
-                            </PopoverTrigger>
-                            <PopoverContent className="w-auto p-2 bg-white">
-                                {currentUrl && <QRCode value={currentUrl} size={128} />}
-                            </PopoverContent>
-                        </Popover>
+                       {isMounted ? (
+                         <Popover>
+                              <PopoverTrigger asChild>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6">
+                                      <QrCode className="h-4 w-4" />
+                                      <span className="sr-only">Show QR Code</span>
+                                  </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-auto p-2 bg-white">
+                                  {currentUrl && <QRCode value={currentUrl} size={128} />}
+                              </PopoverContent>
+                          </Popover>
+                        ) : (
+                          <div className="h-6 w-6 rounded-sm bg-muted/50 animate-pulse" />
+                        )}
                     </CardTitle>
                     <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
                 </div>
@@ -277,17 +281,27 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         </div>
         <div className="mt-4 flex items-center gap-2 rounded-md bg-muted/50 p-2 text-sm">
             <Link2 className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-            <input
-                type="text"
-                readOnly
-                value={currentUrl}
-                className="flex-1 truncate bg-transparent font-mono text-muted-foreground outline-none"
-                aria-label="Room URL"
-            />
-            <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={handleCopyUrl} disabled={!currentUrl}>
-                <span className="sr-only">Copy URL</span>
-                <Copy className="h-4 w-4" />
-            </Button>
+             {isMounted ? (
+                <>
+                    <input
+                        type="text"
+                        readOnly
+                        value={currentUrl}
+                        className="flex-1 truncate bg-transparent font-mono text-muted-foreground outline-none"
+                        aria-label="Room URL"
+                    />
+                    <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={handleCopyUrl}>
+                        <span className="sr-only">Copy URL</span>
+                        <Copy className="h-4 w-4" />
+                    </Button>
+                </>
+            ) : (
+                <>
+                    {/* Placeholders to prevent layout shift */}
+                    <div className="flex-1 h-5 rounded-sm bg-muted/50 animate-pulse" />
+                    <div className="h-7 w-7 rounded-sm bg-muted/50 animate-pulse" />
+                </>
+            )}
         </div>
       </CardHeader>
       <CardContent>
