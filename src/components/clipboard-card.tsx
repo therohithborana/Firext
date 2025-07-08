@@ -9,7 +9,7 @@ import QRCode from 'react-qr-code';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste, QrCode, Link2 } from 'lucide-react';
+import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste, QrCode, Link2, Upload, File as FileIcon, Download } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
@@ -17,12 +17,57 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 type ClipboardImage = { id: string; data: string };
+type ClipboardFile = { id: string; name: string; type: string; size: number; data: string };
+
+type IncomingItem = {
+    chunks: string[];
+    received: number;
+    total: number;
+    contentType: 'image' | 'file';
+    itemId: string;
+    fileInfo?: { name: string; type: string; size: number };
+};
 
 const CHUNK_SIZE = 64 * 1024; // 64KB
 
-const sendChunkedData = (peer: PeerInstance, image: ClipboardImage) => {
+function formatBytes(bytes: number, decimals = 2) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+
+export function ClipboardCard({ roomCode }: { roomCode: string }) {
+  const [text, setText] = useState('');
+  const [images, setImages] = useState<ClipboardImage[]>([]);
+  const [files, setFiles] = useState<ClipboardFile[]>([]);
+  const { toast } = useToast();
+
+  const textRef = useRef(text);
+  const imagesRef = useRef(images);
+  const filesRef = useRef(files);
+  useEffect(() => { textRef.current = text; }, [text]);
+  useEffect(() => { imagesRef.current = images; }, [images]);
+  useEffect(() => { filesRef.current = files; }, [files]);
+
+  const peerId = useRef<string>('');
+  const peersRef = useRef(new Map<string, PeerInstance>());
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const incomingFilesRef = useRef(new Map<string, IncomingItem>());
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
+  const [peerCount, setPeerCount] = useState(0);
+  const [currentUrl, setCurrentUrl] = useState('');
+  const [isMounted, setIsMounted] = useState(false);
+
+  const sendChunkedData = useCallback((peer: PeerInstance, item: ClipboardImage | ClipboardFile, contentType: 'image' | 'file') => {
     const fileId = Math.random().toString(36).substring(2);
-    const data = image.data;
+    const data = item.data;
     const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
     let chunkIndex = 0;
 
@@ -31,15 +76,18 @@ const sendChunkedData = (peer: PeerInstance, image: ClipboardImage) => {
         type: 'start',
         fileId,
         totalChunks,
-        contentType: 'image',
-        imageId: image.id,
+        contentType,
+        itemId: item.id,
+        ...(contentType === 'file' && {
+            fileName: (item as ClipboardFile).name,
+            fileType: (item as ClipboardFile).type,
+            fileSize: (item as ClipboardFile).size,
+        }),
     });
     peer.send(startMessage);
 
     const sendNextChunk = () => {
-        if (chunkIndex >= totalChunks) {
-            return; 
-        }
+        if (chunkIndex >= totalChunks) return;
 
         const channel = (peer as any)._channel;
         const bufferThreshold = 256 * 1024;
@@ -61,47 +109,13 @@ const sendChunkedData = (peer: PeerInstance, image: ClipboardImage) => {
         try {
             peer.send(chunkMessage);
             chunkIndex++;
-            setTimeout(sendNextChunk, 0); 
+            setTimeout(sendNextChunk, 0);
         } catch (error) {
-            console.error("Failed to send chunk, aborting file transfer.", error);
+            console.error("Failed to send chunk, aborting transfer.", error);
         }
     };
-
     sendNextChunk();
-};
-
-
-export function ClipboardCard({ roomCode }: { roomCode: string }) {
-  const [text, setText] = useState('');
-  const [images, setImages] = useState<ClipboardImage[]>([]);
-  const { toast } = useToast();
-
-  const textRef = useRef(text);
-  const imagesRef = useRef(images);
-  useEffect(() => { textRef.current = text; }, [text]);
-  useEffect(() => { imagesRef.current = images; }, [images]);
-
-  const peerId = useRef<string>('');
-  const peersRef = useRef(new Map<string, PeerInstance>());
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const incomingFilesRef = useRef(new Map<string, { chunks: string[], received: number, total: number, imageId: string }>());
-
-
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
-  const [peerCount, setPeerCount] = useState(0);
-  const [currentUrl, setCurrentUrl] = useState('');
-  const [isMounted, setIsMounted] = useState(false);
-
-  useEffect(() => {
-    peerId.current = Math.random().toString(36).substring(2);
-    setIsMounted(true);
   }, []);
-  
-  useEffect(() => {
-    if(isMounted) {
-      setCurrentUrl(window.location.href);
-    }
-  }, [isMounted])
 
   const broadcastRaw = useCallback((message: string) => {
     peersRef.current.forEach(peer => {
@@ -113,6 +127,22 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
             }
         }
     });
+  }, []);
+
+  const broadcastChunked = useCallback((item: ClipboardImage | ClipboardFile, type: 'image' | 'file') => {
+      peersRef.current.forEach(peer => {
+          if (peer.connected) {
+              sendChunkedData(peer, item, type);
+          }
+      });
+  }, [sendChunkedData]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      peerId.current = Math.random().toString(36).substring(2);
+      setCurrentUrl(window.location.href);
+      setIsMounted(true);
+    }
   }, []);
 
   const connectToPeer = useCallback((remotePeerId: string, isInitiator: boolean, offer?: any) => {
@@ -154,7 +184,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     newPeer.on('connect', () => {
       newPeer.send(JSON.stringify({
         type: 'fullSync',
-        data: { text: textRef.current, images: imagesRef.current }
+        data: { text: textRef.current, images: imagesRef.current, files: filesRef.current }
       }));
     });
 
@@ -164,10 +194,17 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
           const message = JSON.parse(messageStr);
 
           if (message.protocol === 'firext-chunking') {
-              const { type, fileId, totalChunks, index, data: chunkData, imageId } = message;
+              const { type, fileId, totalChunks, index, data: chunkData, contentType, itemId, fileName, fileType, fileSize } = message;
 
               if (type === 'start') {
-                  incomingFilesRef.current.set(fileId, { chunks: new Array(totalChunks), received: 0, total: totalChunks, imageId });
+                  incomingFilesRef.current.set(fileId, {
+                      chunks: new Array(totalChunks),
+                      received: 0,
+                      total: totalChunks,
+                      contentType,
+                      itemId,
+                      fileInfo: contentType === 'file' ? { name: fileName, type: fileType, size: fileSize } : undefined,
+                  });
                   return;
               }
 
@@ -179,10 +216,17 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                       
                       if(fileData.received === fileData.total) {
                           const fullDataUri = fileData.chunks.join('');
-                          setImages(current => {
-                            if (current.some(img => img.id === fileData.imageId)) return current;
-                            return [...current, { id: fileData.imageId, data: fullDataUri }];
-                          });
+                          if (fileData.contentType === 'image') {
+                            setImages(current => {
+                              if (current.some(img => img.id === fileData.itemId)) return current;
+                              return [...current, { id: fileData.itemId, data: fullDataUri }];
+                            });
+                          } else if (fileData.contentType === 'file') {
+                            setFiles(current => {
+                                if (current.some(f => f.id === fileData.itemId)) return current;
+                                return [...current, { id: fileData.itemId, ...fileData.fileInfo!, data: fullDataUri }];
+                            });
+                          }
                           incomingFilesRef.current.delete(fileId);
                       }
                   }
@@ -194,25 +238,31 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
             case 'fullSync':
               setText(message.data.text);
               setImages(message.data.images);
+              setFiles(message.data.files || []);
               break;
             case 'textUpdate':
               setText(message.data);
               break;
-            case 'imageAdd':
-              setImages(current => {
-                  if (current.some(img => img.id === message.data.id)) return current;
-                  return [...current, message.data];
-              });
-              break;
             case 'imageRemove':
               setImages(current => current.filter(img => img.id !== message.data));
+              break;
+            case 'fileRemove':
+              setFiles(current => current.filter(f => f.id !== message.data));
               break;
             case 'clear':
               setText('');
               setImages([]);
+              setFiles([]);
               break;
             default:
-              console.warn("Received malformed or unhandled message:", message);
+              // Fallback for legacy plain text data & unhandled imageAdd messages
+              if (typeof message === 'string') {
+                  setText(message);
+              } else if (message.type === 'imageAdd') {
+                  // This is handled by chunking now, but keeping for compatibility
+              } else {
+                  console.warn("Received malformed or unhandled message:", message);
+              }
           }
         } catch (error) {
           // Fallback for legacy plain text data
@@ -229,7 +279,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
       if (err.code === 'ERR_CONNECTION_FAILURE') {
         toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not connect to a peer. Please check your network.' });
       } else {
-        console.log(`Peer event (error) with ${remotePeerId}: ${err.message}`);
+         console.log(`Peer event (error) with ${remotePeerId}: ${err.message}`);
       }
       if (peersRef.current.has(remotePeerId)) {
         peersRef.current.get(remotePeerId)?.destroy();
@@ -252,6 +302,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const handleClearClipboard = () => {
     setText('');
     setImages([]);
+    setFiles([]);
     broadcastRaw(JSON.stringify({ type: 'clear' }));
   };
 
@@ -282,23 +333,14 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                 if(dataUri) {
                     const newImage: ClipboardImage = { id: Math.random().toString(36).substring(2), data: dataUri };
                     setImages(current => [...current, newImage]);
-                    
-                    if (dataUri.length > CHUNK_SIZE) {
-                      peersRef.current.forEach(peer => {
-                          if (peer.connected) {
-                              sendChunkedData(peer, newImage);
-                          }
-                      });
-                    } else {
-                      broadcastRaw(JSON.stringify({ type: 'imageAdd', data: newImage }));
-                    }
+                    broadcastChunked(newImage, 'image');
                 }
             };
             reader.readAsDataURL(blob);
         }
     }
     if (imageFound) {
-      e.preventDefault(); // Prevents image being pasted as text in textarea
+      e.preventDefault();
     }
   };
 
@@ -306,6 +348,48 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     setImages(current => current.filter(img => img.id !== imageId));
     broadcastRaw(JSON.stringify({ type: 'imageRemove', data: imageId }));
   };
+
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const selectedFiles = e.target.files;
+      if (!selectedFiles) return;
+
+      for (let i = 0; i < selectedFiles.length; i++) {
+          const file = selectedFiles[i];
+          const reader = new FileReader();
+          reader.onload = (event) => {
+              const dataUri = event.target?.result as string;
+              if (dataUri) {
+                  const newFile: ClipboardFile = {
+                      id: Math.random().toString(36).substring(2),
+                      name: file.name,
+                      type: file.type,
+                      size: file.size,
+                      data: dataUri,
+                  };
+                  setFiles(current => [...current, newFile]);
+                  broadcastChunked(newFile, 'file');
+              }
+          };
+          reader.readAsDataURL(file);
+      }
+      // Reset file input
+      if(fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  const handleRemoveFile = (fileId: string) => {
+      setFiles(current => current.filter(f => f.id !== fileId));
+      broadcastRaw(JSON.stringify({ type: 'fileRemove', data: fileId }));
+  };
+
+  const handleDownloadFile = (file: ClipboardFile) => {
+      if (!file.data) return;
+      const link = document.createElement('a');
+      link.href = file.data;
+      link.download = file.name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+  }
 
   const disconnect = () => {
     stopPolling();
@@ -407,7 +491,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                     <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
                       Firext
                        <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
-                       {isMounted ? (
+                       {isMounted && (
                          <Popover>
                               <PopoverTrigger asChild>
                                   <Button variant="ghost" size="icon" className="h-6 w-6">
@@ -419,8 +503,6 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                                   {currentUrl && <QRCode value={currentUrl} size={128} />}
                               </PopoverContent>
                           </Popover>
-                        ) : (
-                          <div className="h-6 w-6 rounded-sm bg-muted/50 animate-pulse" />
                         )}
                     </CardTitle>
                     <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
@@ -496,6 +578,35 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                 </div>
               </div>
             )}
+
+            {files.length > 0 && (
+              <div>
+                <Label>Synced Files</Label>
+                <div className="mt-2 space-y-2 p-2 border rounded-md bg-muted/20">
+                    {files.map(file => (
+                        <div key={file.id} className="flex items-center justify-between gap-3 p-2 rounded-md bg-background/50">
+                            <div className='flex items-center gap-3 min-w-0'>
+                                <FileIcon className="h-6 w-6 flex-shrink-0 text-primary"/>
+                                <div className='min-w-0'>
+                                    <p className="text-sm font-medium truncate">{file.name}</p>
+                                    <p className="text-xs text-muted-foreground">{formatBytes(file.size)}</p>
+                                </div>
+                            </div>
+                            <div className='flex items-center gap-2 flex-shrink-0'>
+                                <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => handleDownloadFile(file)}>
+                                    <Download className="h-4 w-4" />
+                                    <span className="sr-only">Download file</span>
+                                </Button>
+                                <Button variant="destructive" size="icon" className="h-8 w-8" onClick={() => handleRemoveFile(file.id)}>
+                                    <Trash2 className="h-4 w-4" />
+                                    <span className="sr-only">Remove file</span>
+                                </Button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+              </div>
+            )}
         </div>
       </CardContent>
       <CardFooter className="flex flex-col sm:flex-row items-stretch gap-2 justify-start bg-muted/30 py-4 px-6">
@@ -503,7 +614,18 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
             <Copy className="mr-2 h-4 w-4" />
             Copy Text
         </Button>
-        <Button variant="outline" onClick={handleClearClipboard} disabled={!text && images.length === 0}>
+        <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+            <Upload className="mr-2 h-4 w-4" />
+            Upload File
+        </Button>
+        <input
+            type="file"
+            ref={fileInputRef}
+            onChange={handleFileSelect}
+            className="hidden"
+            multiple
+        />
+        <Button variant="outline" onClick={handleClearClipboard} disabled={!text && images.length === 0 && files.length === 0}>
             <Trash2 className="mr-2 h-4 w-4" />
             Clear All
         </Button>
@@ -511,3 +633,5 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     </Card>
   );
 }
+
+    
