@@ -19,6 +19,12 @@ type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 type ClipboardImage = { id: string; data: string };
 type ClipboardFile = { id: string; name: string; type: string; size: number; data: string };
 
+type ClipboardState = {
+    text: string;
+    images: ClipboardImage[];
+    files: ClipboardFile[];
+}
+
 type IncomingItem = {
     chunks: string[];
     received: number;
@@ -41,17 +47,11 @@ function formatBytes(bytes: number, decimals = 2) {
 
 
 export function ClipboardCard({ roomCode }: { roomCode: string }) {
-  const [text, setText] = useState('');
-  const [images, setImages] = useState<ClipboardImage[]>([]);
-  const [files, setFiles] = useState<ClipboardFile[]>([]);
+  const [clipboard, setClipboard] = useState<ClipboardState>({ text: '', images: [], files: [] });
   const { toast } = useToast();
 
-  const textRef = useRef(text);
-  const imagesRef = useRef(images);
-  const filesRef = useRef(files);
-  useEffect(() => { textRef.current = text; }, [text]);
-  useEffect(() => { imagesRef.current = images; }, [images]);
-  useEffect(() => { filesRef.current = files; }, [files]);
+  const clipboardRef = useRef(clipboard);
+  useEffect(() => { clipboardRef.current = clipboard; }, [clipboard]);
 
   const peerId = useRef<string>('');
   const peersRef = useRef(new Map<string, PeerInstance>());
@@ -182,7 +182,6 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('connect', () => {
-      // When we connect, we request the full state from the other peer.
       newPeer.send(JSON.stringify({ type: 'syncRequest' }));
     });
 
@@ -215,14 +214,14 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                       if(fileData.received === fileData.total) {
                           const fullDataUri = fileData.chunks.join('');
                           if (fileData.contentType === 'image') {
-                            setImages(current => {
-                              if (current.some(img => img.id === fileData.itemId)) return current;
-                              return [...current, { id: fileData.itemId, data: fullDataUri }];
+                            setClipboard(current => {
+                              if (current.images.some(img => img.id === fileData.itemId)) return current;
+                              return { ...current, images: [...current.images, { id: fileData.itemId, data: fullDataUri }]};
                             });
                           } else if (fileData.contentType === 'file') {
-                            setFiles(current => {
-                                if (current.some(f => f.id === fileData.itemId)) return current;
-                                return [...current, { id: fileData.itemId, ...fileData.fileInfo!, data: fullDataUri }];
+                            setClipboard(current => {
+                                if (current.files.some(f => f.id === fileData.itemId)) return current;
+                                return { ...current, files: [...current.files, { id: fileData.itemId, ...fileData.fileInfo!, data: fullDataUri }]};
                             });
                           }
                           incomingFilesRef.current.delete(fileId);
@@ -234,42 +233,49 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
           
           switch(message.type) {
             case 'syncRequest':
-              // The other peer is requesting our state, so we send it.
               newPeer.send(JSON.stringify({
                 type: 'fullSync',
-                data: { text: textRef.current, images: imagesRef.current, files: filesRef.current }
+                data: clipboardRef.current
               }));
               break;
             case 'fullSync':
-              // We've received the full state from another peer.
-              setText(message.data.text);
-              setImages(message.data.images);
-              setFiles(message.data.files || []);
+              const theirState = message.data;
+              setClipboard(currentClipboard => {
+                  const isMyStateEmpty = currentClipboard.text === '' && currentClipboard.images.length === 0 && currentClipboard.files.length === 0;
+                  const isTheirStateEmpty = (theirState.text === '' || theirState.text === undefined) && (theirState.images === undefined || theirState.images.length === 0) && (theirState.files === undefined || theirState.files.length === 0);
+                  
+                  if (!isMyStateEmpty && isTheirStateEmpty) {
+                      return currentClipboard;
+                  }
+                  return {
+                      text: theirState.text || '',
+                      images: theirState.images || [],
+                      files: theirState.files || [],
+                  };
+              });
               break;
             case 'textUpdate':
-              setText(message.data);
+              setClipboard(c => ({...c, text: message.data}));
               break;
             case 'imageRemove':
-              setImages(current => current.filter(img => img.id !== message.data));
+              setClipboard(c => ({...c, images: c.images.filter(img => img.id !== message.data)}));
               break;
             case 'fileRemove':
-              setFiles(current => current.filter(f => f.id !== message.data));
+              setClipboard(c => ({...c, files: c.files.filter(f => f.id !== message.data)}));
               break;
             case 'clear':
-              setText('');
-              setImages([]);
-              setFiles([]);
+              setClipboard({ text: '', images: [], files: [] });
               break;
             default:
               if (typeof message === 'string') {
-                  setText(message);
+                  setClipboard(c => ({...c, text: messageStr, images:[], files:[]}));
               } else {
                   console.warn("Received malformed or unhandled message:", message);
               }
           }
         } catch (error) {
           // Fallback for legacy plain text data
-          setText(messageStr);
+          setClipboard(c => ({...c, text: messageStr, images:[], files:[]}));
         }
     });
 
@@ -298,20 +304,18 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
-    setText(newText);
+    setClipboard(c => ({ ...c, text: newText }));
     broadcastRaw(JSON.stringify({ type: 'textUpdate', data: newText }));
   };
   
   const handleClearClipboard = () => {
-    setText('');
-    setImages([]);
-    setFiles([]);
+    setClipboard({ text: '', images: [], files: [] });
     broadcastRaw(JSON.stringify({ type: 'clear' }));
   };
 
   const handleCopyText = async () => {
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
+    if (!clipboard.text) return;
+    await navigator.clipboard.writeText(clipboard.text);
     toast({ title: 'Copied text to clipboard!' });
   };
   
@@ -335,7 +339,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                 const dataUri = event.target?.result as string;
                 if(dataUri) {
                     const newImage: ClipboardImage = { id: Math.random().toString(36).substring(2), data: dataUri };
-                    setImages(current => [...current, newImage]);
+                    setClipboard(c => ({...c, images: [...c.images, newImage]}));
                     broadcastChunked(newImage, 'image');
                 }
             };
@@ -348,7 +352,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   };
 
   const handleRemoveImage = (imageId: string) => {
-    setImages(current => current.filter(img => img.id !== imageId));
+    setClipboard(c => ({...c, images: c.images.filter(img => img.id !== imageId)}));
     broadcastRaw(JSON.stringify({ type: 'imageRemove', data: imageId }));
   };
 
@@ -369,18 +373,17 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                       size: file.size,
                       data: dataUri,
                   };
-                  setFiles(current => [...current, newFile]);
+                  setClipboard(c => ({...c, files: [...c.files, newFile]}));
                   broadcastChunked(newFile, 'file');
               }
           };
           reader.readAsDataURL(file);
       }
-      // Reset file input
       if(fileInputRef.current) fileInputRef.current.value = '';
   }
 
   const handleRemoveFile = (fileId: string) => {
-      setFiles(current => current.filter(f => f.id !== fileId));
+      setClipboard(c => ({...c, files: c.files.filter(f => f.id !== fileId)}));
       broadcastRaw(JSON.stringify({ type: 'fileRemove', data: fileId }));
   };
 
@@ -394,23 +397,21 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
       document.body.removeChild(link);
   }
 
-  const disconnect = () => {
-    stopPolling();
-    peersRef.current.forEach(peer => peer.destroy());
-    peersRef.current.clear();
-    setConnectionStatus('Disconnected');
-    setPeerCount(0);
-  };
-
-  const stopPolling = () => {
+  const disconnect = useCallback(() => {
     if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
     }
-  }
+    peersRef.current.forEach(peer => peer.destroy());
+    peersRef.current.clear();
+    setConnectionStatus('Disconnected');
+    setPeerCount(0);
+  }, []);
 
   const startPolling = useCallback(() => {
-    stopPolling();
+    if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+    }
     pollingIntervalRef.current = setInterval(async () => {
       try {
         const res = await fetch(`/api/webrtc/signal?room=${roomCode}&peerId=${peerId.current}`);
@@ -451,7 +452,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         disconnect();
       }
     }, 2000);
-  }, [roomCode, connectToPeer, toast]);
+  }, [roomCode, connectToPeer, toast, disconnect]);
   
   useEffect(() => {
     if (!isMounted) return;
@@ -461,7 +462,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     return () => {
         disconnect();
     };
-  }, [isMounted, startPolling]);
+  }, [isMounted, startPolling, disconnect]);
 
 
   const getStatusBadgeVariant = () => {
@@ -547,20 +548,20 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
               <Label htmlFor="clipboard-textarea">Synced Clipboard Text</Label>
               <Textarea
                   id="clipboard-textarea"
-                  value={text}
+                  value={clipboard.text}
                   onChange={handleTextChange}
                   placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Type or paste content here...'}
                   rows={8}
-                  disabled={connectionStatus !== 'Connected' && peerCount === 0 && text === ''}
+                  disabled={connectionStatus !== 'Connected' && peerCount === 0 && clipboard.text === ''}
                   className="mt-2"
               />
             </div>
 
-            {images.length > 0 && (
+            {clipboard.images.length > 0 && (
               <div>
                 <Label>Synced Images</Label>
                 <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 p-2 border rounded-md min-h-[120px] bg-muted/20">
-                    {images.map(image => (
+                    {clipboard.images.map(image => (
                         <div key={image.id} className="relative group aspect-square">
                             <img
                                 src={image.data}
@@ -582,11 +583,11 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
               </div>
             )}
 
-            {files.length > 0 && (
+            {clipboard.files.length > 0 && (
               <div>
                 <Label>Synced Files</Label>
                 <div className="mt-2 space-y-2 p-2 border rounded-md bg-muted/20">
-                    {files.map(file => (
+                    {clipboard.files.map(file => (
                         <div key={file.id} className="flex items-center justify-between gap-3 p-2 rounded-md bg-background/50">
                             <div className='flex items-center gap-3 min-w-0'>
                                 <FileIcon className="h-6 w-6 flex-shrink-0 text-primary"/>
@@ -613,7 +614,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         </div>
       </CardContent>
       <CardFooter className="flex flex-col sm:flex-row items-stretch gap-2 justify-start bg-muted/30 py-4 px-6">
-        <Button onClick={handleCopyText} disabled={!text}>
+        <Button onClick={handleCopyText} disabled={!clipboard.text}>
             <Copy className="mr-2 h-4 w-4" />
             Copy Text
         </Button>
@@ -628,7 +629,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
             className="hidden"
             multiple
         />
-        <Button variant="outline" onClick={handleClearClipboard} disabled={!text && images.length === 0 && files.length === 0}>
+        <Button variant="outline" onClick={handleClearClipboard} disabled={!clipboard.text && clipboard.images.length === 0 && clipboard.files.length === 0}>
             <Trash2 className="mr-2 h-4 w-4" />
             Clear All
         </Button>
