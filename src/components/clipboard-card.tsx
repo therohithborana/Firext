@@ -22,16 +22,21 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const inputTextRef = useRef(inputText);
   const { toast } = useToast();
 
-  const peerId = useRef(Math.random().toString(36).substring(2));
+  const peerId = useRef<string>('');
   const peersRef = useRef(new Map<string, PeerInstance>());
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
   const [peerCount, setPeerCount] = useState(0);
   const [currentUrl, setCurrentUrl] = useState('');
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
+    // This effect runs only once on the client, after the initial render.
+    // We initialize all client-side-only values here to prevent hydration errors.
+    peerId.current = Math.random().toString(36).substring(2);
     setCurrentUrl(window.location.href);
+    setIsMounted(true);
   }, []);
 
   useEffect(() => {
@@ -200,13 +205,16 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   }, [roomCode, connectToPeer, toast]);
   
   useEffect(() => {
+    // We only start polling after the component has mounted and client-side values are set.
+    if (!isMounted) return;
+    
     startPolling();
     
     // Cleanup on component unmount
     return () => {
         disconnect();
     };
-  }, [startPolling]);
+  }, [isMounted, startPolling]);
 
 
   const getStatusBadgeVariant = () => {
