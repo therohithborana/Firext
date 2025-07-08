@@ -3,8 +3,8 @@ import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 
 export const metadata: Metadata = {
-  title: 'Firext',
-  description: 'Cross-device clipboard powered by WebRTC.',
+  title: 'FliqShare',
+  description: 'FliqShare: A real-time, cross-device clipboard powered by WebRTC.',
 };
 
 export default function RootLayout({

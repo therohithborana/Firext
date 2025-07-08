@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from 'react';
@@ -9,11 +8,12 @@ import QRCode from 'react-qr-code';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste, QrCode, Link2, Upload, File as FileIcon, Download } from 'lucide-react';
+import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, QrCode, Link2, Upload, File as FileIcon, Download } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { Logo } from '@/components/logo';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 type ClipboardImage = { id: string; data: string };
@@ -239,19 +239,31 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
               }));
               break;
             case 'fullSync':
-              const theirState = message.data;
               setClipboard(currentClipboard => {
-                  const isMyStateEmpty = currentClipboard.text === '' && currentClipboard.images.length === 0 && currentClipboard.files.length === 0;
-                  const isTheirStateEmpty = (theirState.text === '' || theirState.text === undefined) && (theirState.images === undefined || theirState.images.length === 0) && (theirState.files === undefined || theirState.files.length === 0);
-                  
-                  if (!isMyStateEmpty && isTheirStateEmpty) {
-                      return currentClipboard;
-                  }
-                  return {
-                      text: theirState.text || '',
-                      images: theirState.images || [],
-                      files: theirState.files || [],
+                  const { text, images, files } = message.data;
+                  const newImages = images?.filter((img: ClipboardImage) => !currentClipboard.images.some(i => i.id === img.id)) || [];
+                  const newFiles = files?.filter((file: ClipboardFile) => !currentClipboard.files.some(f => f.id === file.id)) || [];
+              
+                  const mergedState = {
+                    text: currentClipboard.text || text || '',
+                    images: [...currentClipboard.images, ...newImages],
+                    files: [...currentClipboard.files, ...newFiles],
                   };
+
+                  const isMyStateEmpty = currentClipboard.text === '' && currentClipboard.images.length === 0 && currentClipboard.files.length === 0;
+                  if(isMyStateEmpty) {
+                     return {
+                        text: text || '',
+                        images: images || [],
+                        files: files || [],
+                     };
+                  }
+
+                  if(text && text !== currentClipboard.text) {
+                     mergedState.text = text;
+                  }
+                  
+                  return mergedState;
               });
               break;
             case 'textUpdate':
@@ -488,12 +500,12 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
       <CardHeader>
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className='flex items-center gap-3'>
-                <div className="p-3 rounded-lg bg-primary/10">
-                    <ClipboardPaste className="w-6 h-6 text-primary" />
+                <div className="p-2 rounded-lg bg-black">
+                    <Logo className="w-8 h-8" />
                 </div>
                 <div>
                     <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
-                      Firext
+                      FliqShare
                        <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
                        {isMounted && (
                          <Popover>
