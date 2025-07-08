@@ -16,10 +16,13 @@ import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
-type ClipboardContent = { type: 'text' | 'image'; data: string };
+type ClipboardImage = { id: string; data: string };
+
 const CHUNK_SIZE = 64 * 1024; // 64KB
 
-const sendChunkedData = (peer: PeerInstance, data: string, fileId: string, contentType: 'image') => {
+const sendChunkedData = (peer: PeerInstance, image: ClipboardImage) => {
+    const fileId = Math.random().toString(36).substring(2);
+    const data = image.data;
     const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
     let chunkIndex = 0;
 
@@ -28,23 +31,20 @@ const sendChunkedData = (peer: PeerInstance, data: string, fileId: string, conte
         type: 'start',
         fileId,
         totalChunks,
-        contentType,
+        contentType: 'image',
+        imageId: image.id,
     });
     peer.send(startMessage);
 
     const sendNextChunk = () => {
         if (chunkIndex >= totalChunks) {
-            return; // Finished
+            return; 
         }
 
-        // A conservative threshold for the buffer
-        const bufferThreshold = 256 * 1024; // 256KB
-        
-        // Using internal _channel is not ideal, but necessary for bufferedAmount in simple-peer
         const channel = (peer as any)._channel;
+        const bufferThreshold = 256 * 1024;
 
         if (channel && channel.bufferedAmount > bufferThreshold) {
-            // Buffer is getting full, wait and try again
             setTimeout(sendNextChunk, 50);
             return;
         }
@@ -61,28 +61,30 @@ const sendChunkedData = (peer: PeerInstance, data: string, fileId: string, conte
         try {
             peer.send(chunkMessage);
             chunkIndex++;
-            // Use setTimeout to yield to the event loop, preventing UI freeze and buffer overflow
-            setTimeout(sendNextChunk, 0);
+            setTimeout(sendNextChunk, 0); 
         } catch (error) {
             console.error("Failed to send chunk, aborting file transfer.", error);
-            // Don't continue sending if an error occurs
         }
     };
 
-    // Start the sending process
     sendNextChunk();
 };
 
 
 export function ClipboardCard({ roomCode }: { roomCode: string }) {
-  const [clipboardContent, setClipboardContent] = useState<ClipboardContent>({ type: 'text', data: '' });
-  const clipboardContentRef = useRef(clipboardContent);
+  const [text, setText] = useState('');
+  const [images, setImages] = useState<ClipboardImage[]>([]);
   const { toast } = useToast();
+
+  const textRef = useRef(text);
+  const imagesRef = useRef(images);
+  useEffect(() => { textRef.current = text; }, [text]);
+  useEffect(() => { imagesRef.current = images; }, [images]);
 
   const peerId = useRef<string>('');
   const peersRef = useRef(new Map<string, PeerInstance>());
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const incomingFilesRef = useRef(new Map<string, { chunks: string[], received: number, total: number }>());
+  const incomingFilesRef = useRef(new Map<string, { chunks: string[], received: number, total: number, imageId: string }>());
 
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
@@ -92,35 +94,25 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
   useEffect(() => {
     peerId.current = Math.random().toString(36).substring(2);
-    setCurrentUrl(window.location.href);
     setIsMounted(true);
   }, []);
-
-  useEffect(() => {
-    clipboardContentRef.current = clipboardContent;
-  }, [clipboardContent]);
   
-  const broadcastContent = useCallback((content: ClipboardContent) => {
-    if (content.type === 'image' && content.data.length > CHUNK_SIZE) {
-        const fileId = Math.random().toString(36).substring(2);
-        
-        peersRef.current.forEach(peer => {
-            if (peer.connected) {
-                sendChunkedData(peer, content.data, fileId, 'image');
-            }
-        });
-    } else {
-        const message = JSON.stringify(content);
-        peersRef.current.forEach(peer => {
-            if (peer.connected) {
-                try {
-                  peer.send(message);
-                } catch(err) {
-                  console.error("Failed to send content:", err);
-                }
-            }
-        });
+  useEffect(() => {
+    if(isMounted) {
+      setCurrentUrl(window.location.href);
     }
+  }, [isMounted])
+
+  const broadcastRaw = useCallback((message: string) => {
+    peersRef.current.forEach(peer => {
+        if (peer.connected) {
+            try {
+              peer.send(message);
+            } catch(err) {
+              console.error("Failed to send content:", err);
+            }
+        }
+    });
   }, []);
 
   const connectToPeer = useCallback((remotePeerId: string, isInitiator: boolean, offer?: any) => {
@@ -160,7 +152,10 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('connect', () => {
-      newPeer.send(JSON.stringify(clipboardContentRef.current));
+      newPeer.send(JSON.stringify({
+        type: 'fullSync',
+        data: { text: textRef.current, images: imagesRef.current }
+      }));
     });
 
     newPeer.on('data', (data) => {
@@ -169,10 +164,10 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
           const message = JSON.parse(messageStr);
 
           if (message.protocol === 'firext-chunking') {
-              const { type, fileId, totalChunks, index, data: chunkData } = message;
+              const { type, fileId, totalChunks, index, data: chunkData, imageId } = message;
 
               if (type === 'start') {
-                  incomingFilesRef.current.set(fileId, { chunks: new Array(totalChunks), received: 0, total: totalChunks });
+                  incomingFilesRef.current.set(fileId, { chunks: new Array(totalChunks), received: 0, total: totalChunks, imageId });
                   return;
               }
 
@@ -184,7 +179,10 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                       
                       if(fileData.received === fileData.total) {
                           const fullDataUri = fileData.chunks.join('');
-                          setClipboardContent({ type: 'image', data: fullDataUri });
+                          setImages(current => {
+                            if (current.some(img => img.id === fileData.imageId)) return current;
+                            return [...current, { id: fileData.imageId, data: fullDataUri }];
+                          });
                           incomingFilesRef.current.delete(fileId);
                       }
                   }
@@ -192,34 +190,47 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
               }
           }
           
-          if ((message.type === 'text' || message.type === 'image') && typeof message.data === 'string') {
-              setClipboardContent(message);
-          } else {
-               console.warn("Received malformed content object:", message);
+          switch(message.type) {
+            case 'fullSync':
+              setText(message.data.text);
+              setImages(message.data.images);
+              break;
+            case 'textUpdate':
+              setText(message.data);
+              break;
+            case 'imageAdd':
+              setImages(current => {
+                  if (current.some(img => img.id === message.data.id)) return current;
+                  return [...current, message.data];
+              });
+              break;
+            case 'imageRemove':
+              setImages(current => current.filter(img => img.id !== message.data));
+              break;
+            case 'clear':
+              setText('');
+              setImages([]);
+              break;
+            default:
+              console.warn("Received malformed or unhandled message:", message);
           }
         } catch (error) {
-          setClipboardContent({ type: 'text', data: messageStr });
+          // Fallback for legacy plain text data
+          setText(messageStr);
         }
     });
 
     newPeer.on('close', () => {
+      peersRef.current.get(remotePeerId)?.destroy();
       peersRef.current.delete(remotePeerId);
     });
 
     newPeer.on('error', (err: PeerError) => {
-      // "ERR_CONNECTION_FAILURE" is a critical error we should notify the user about.
       if (err.code === 'ERR_CONNECTION_FAILURE') {
-        console.error(`Peer connection failure with ${remotePeerId}:`, err);
         toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not connect to a peer. Please check your network.' });
       } else {
-        // Other errors, like "Close called", are often part of the normal lifecycle
-        // of a connection and don't need to be surfaced as critical errors.
-        // We can log them for debugging purposes without alarming the user.
         console.log(`Peer event (error) with ${remotePeerId}: ${err.message}`);
       }
-
-      // The 'close' event will also fire, which handles cleanup.
-      // But to be safe, we can ensure the peer is removed here too.
       if (peersRef.current.has(remotePeerId)) {
         peersRef.current.get(remotePeerId)?.destroy();
         peersRef.current.delete(remotePeerId);
@@ -229,26 +240,25 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     if (offer) {
       newPeer.signal(offer);
     }
-  }, [roomCode, toast, broadcastContent]);
+  }, [roomCode, toast, broadcastRaw]);
 
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const text = e.target.value;
-    const newContent: ClipboardContent = { type: 'text', data: text };
-    setClipboardContent(newContent);
-    broadcastContent(newContent);
+    const newText = e.target.value;
+    setText(newText);
+    broadcastRaw(JSON.stringify({ type: 'textUpdate', data: newText }));
   };
   
   const handleClearClipboard = () => {
-    const newContent: ClipboardContent = { type: 'text', data: '' };
-    setClipboardContent(newContent);
-    broadcastContent(newContent);
+    setText('');
+    setImages([]);
+    broadcastRaw(JSON.stringify({ type: 'clear' }));
   };
 
-  const handleCopyToClipboard = async (text: string) => {
+  const handleCopyText = async () => {
     if (!text) return;
     await navigator.clipboard.writeText(text);
-    toast({ title: 'Copied to clipboard!' });
+    toast({ title: 'Copied text to clipboard!' });
   };
   
   const handleCopyUrl = async () => {
@@ -259,25 +269,42 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   
   const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
     const items = e.clipboardData.items;
+    let imageFound = false;
     for (let i = 0; i < items.length; i++) {
         if (items[i].type.indexOf("image") !== -1) {
-            e.preventDefault();
+            imageFound = true;
             const blob = items[i].getAsFile();
-            if (!blob) return;
+            if (!blob) continue;
 
             const reader = new FileReader();
             reader.onload = (event) => {
                 const dataUri = event.target?.result as string;
                 if(dataUri) {
-                    const newContent: ClipboardContent = { type: 'image', data: dataUri };
-                    setClipboardContent(newContent);
-                    broadcastContent(newContent);
+                    const newImage: ClipboardImage = { id: Math.random().toString(36).substring(2), data: dataUri };
+                    setImages(current => [...current, newImage]);
+                    
+                    if (dataUri.length > CHUNK_SIZE) {
+                      peersRef.current.forEach(peer => {
+                          if (peer.connected) {
+                              sendChunkedData(peer, newImage);
+                          }
+                      });
+                    } else {
+                      broadcastRaw(JSON.stringify({ type: 'imageAdd', data: newImage }));
+                    }
                 }
             };
             reader.readAsDataURL(blob);
-            return;
         }
     }
+    if (imageFound) {
+      e.preventDefault(); // Prevents image being pasted as text in textarea
+    }
+  };
+
+  const handleRemoveImage = (imageId: string) => {
+    setImages(current => current.filter(img => img.id !== imageId));
+    broadcastRaw(JSON.stringify({ type: 'imageRemove', data: imageId }));
   };
 
   const disconnect = () => {
@@ -430,36 +457,55 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         )}
       </CardHeader>
       <CardContent onPaste={handlePaste}>
-         <div className="space-y-2">
-            <Label htmlFor="clipboard-textarea">Synced Clipboard</Label>
-            {clipboardContent.type === 'image' && clipboardContent.data ? (
-                <div className="mb-2 relative p-2 border rounded-md min-h-[220px] flex items-center justify-center bg-muted/20">
-                    <img
-                        src={clipboardContent.data}
-                        alt="Pasted clipboard content"
-                        className="max-w-full max-h-full object-contain rounded-md"
-                        style={{ maxHeight: '220px' }}
-                    />
+         <div className="space-y-4">
+            <div>
+              <Label htmlFor="clipboard-textarea">Synced Clipboard Text</Label>
+              <Textarea
+                  id="clipboard-textarea"
+                  value={text}
+                  onChange={handleTextChange}
+                  placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Type or paste content here...'}
+                  rows={8}
+                  disabled={connectionStatus !== 'Connected' && peerCount === 0 && text === ''}
+                  className="mt-2"
+              />
+            </div>
+
+            {images.length > 0 && (
+              <div>
+                <Label>Synced Images</Label>
+                <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 p-2 border rounded-md min-h-[120px] bg-muted/20">
+                    {images.map(image => (
+                        <div key={image.id} className="relative group aspect-square">
+                            <img
+                                src={image.data}
+                                alt="Pasted clipboard content"
+                                className="w-full h-full object-cover rounded-md"
+                            />
+                             <Button
+                                variant="destructive"
+                                size="icon"
+                                className="absolute top-1 right-1 h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity z-10"
+                                onClick={() => handleRemoveImage(image.id)}
+                            >
+                                <Trash2 className="h-4 w-4" />
+                                <span className="sr-only">Remove image</span>
+                            </Button>
+                        </div>
+                    ))}
                 </div>
-            ) : null}
-            <Textarea
-                id="clipboard-textarea"
-                value={clipboardContent.type === 'text' ? clipboardContent.data : ''}
-                onChange={handleTextChange}
-                placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Type or paste content here...'}
-                rows={clipboardContent.type === 'image' && clipboardContent.data ? 4 : 10}
-                disabled={connectionStatus !== 'Connected' && peerCount === 0}
-            />
+              </div>
+            )}
         </div>
       </CardContent>
       <CardFooter className="flex flex-col sm:flex-row items-stretch gap-2 justify-start bg-muted/30 py-4 px-6">
-        <Button onClick={() => handleCopyToClipboard(clipboardContent.data)} disabled={clipboardContent.type !== 'text' || !clipboardContent.data}>
+        <Button onClick={handleCopyText} disabled={!text}>
             <Copy className="mr-2 h-4 w-4" />
             Copy Text
         </Button>
-        <Button variant="outline" onClick={handleClearClipboard} disabled={!clipboardContent.data}>
+        <Button variant="outline" onClick={handleClearClipboard} disabled={!text && images.length === 0}>
             <Trash2 className="mr-2 h-4 w-4" />
-            Clear
+            Clear All
         </Button>
       </CardFooter>
     </Card>
