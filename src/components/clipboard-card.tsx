@@ -17,6 +17,7 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 type ClipboardContent = { type: 'text' | 'image'; data: string };
+const CHUNK_SIZE = 64 * 1024; // 64KB
 
 export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const [clipboardContent, setClipboardContent] = useState<ClipboardContent>({ type: 'text', data: '' });
@@ -26,6 +27,8 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const peerId = useRef<string>('');
   const peersRef = useRef(new Map<string, PeerInstance>());
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const incomingFilesRef = useRef(new Map<string, { chunks: string[], received: number, total: number }>());
+
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
   const [peerCount, setPeerCount] = useState(0);
@@ -43,12 +46,39 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   }, [clipboardContent]);
   
   const broadcastContent = useCallback((content: ClipboardContent) => {
-    const message = JSON.stringify(content);
-    peersRef.current.forEach(peer => {
-      if (peer.connected) {
-        peer.send(message);
-      }
-    });
+    if (content.type === 'image' && content.data.length > CHUNK_SIZE) {
+        const fileId = Math.random().toString(36).substring(2);
+        const totalChunks = Math.ceil(content.data.length / CHUNK_SIZE);
+
+        const startMessage = JSON.stringify({
+            protocol: 'firext-chunking',
+            type: 'start',
+            fileId,
+            totalChunks,
+            contentType: 'image',
+        });
+
+        peersRef.current.forEach(peer => peer.connected && peer.send(startMessage));
+
+        for (let i = 0; i < totalChunks; i++) {
+            const chunk = content.data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+            const chunkMessage = JSON.stringify({
+                protocol: 'firext-chunking',
+                type: 'chunk',
+                fileId,
+                index: i,
+                data: chunk,
+            });
+            peersRef.current.forEach(peer => peer.connected && peer.send(chunkMessage));
+        }
+    } else {
+        const message = JSON.stringify(content);
+        peersRef.current.forEach(peer => {
+            if (peer.connected) {
+                peer.send(message);
+            }
+        });
+    }
   }, []);
 
   const connectToPeer = useCallback((remotePeerId: string, isInitiator: boolean, offer?: any) => {
@@ -64,12 +94,12 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
       trickle: false,
       config: {
         iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-          { urls: 'stun:stun4.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' },
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
         ]
       }
     });
@@ -92,18 +122,42 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('data', (data) => {
-      const receivedText = data.toString();
-       try {
-        const receivedContent = JSON.parse(receivedText);
-        if ((receivedContent.type === 'text' || receivedContent.type === 'image') && typeof receivedContent.data === 'string') {
-            setClipboardContent(receivedContent);
-        } else {
-             console.warn("Received malformed content object:", receivedContent);
+      const messageStr = data.toString();
+      try {
+          const message = JSON.parse(messageStr);
+
+          if (message.protocol === 'firext-chunking') {
+              const { type, fileId, totalChunks, index, data: chunkData } = message;
+
+              if (type === 'start') {
+                  incomingFilesRef.current.set(fileId, { chunks: new Array(totalChunks), received: 0, total: totalChunks });
+                  return;
+              }
+
+              if (type === 'chunk') {
+                  const fileData = incomingFilesRef.current.get(fileId);
+                  if (fileData && !fileData.chunks[index]) {
+                      fileData.chunks[index] = chunkData;
+                      fileData.received++;
+                      
+                      if(fileData.received === fileData.total) {
+                          const fullDataUri = fileData.chunks.join('');
+                          setClipboardContent({ type: 'image', data: fullDataUri });
+                          incomingFilesRef.current.delete(fileId);
+                      }
+                  }
+                  return;
+              }
+          }
+          
+          if ((message.type === 'text' || message.type === 'image') && typeof message.data === 'string') {
+              setClipboardContent(message);
+          } else {
+               console.warn("Received malformed content object:", message);
+          }
+        } catch (error) {
+          setClipboardContent({ type: 'text', data: messageStr });
         }
-      } catch (error) {
-        console.warn("Received non-JSON data, treating as text:", receivedText);
-        setClipboardContent({ type: 'text', data: receivedText });
-      }
     });
 
     newPeer.on('close', () => {
@@ -124,7 +178,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     if (offer) {
       newPeer.signal(offer);
     }
-  }, [roomCode, toast]);
+  }, [roomCode, toast, broadcastContent]);
 
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -307,29 +361,22 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                 )}
             </div>
         </div>
-        <div className="mt-4 flex items-center gap-2 rounded-md bg-muted/50 p-2 text-sm">
-            <Link2 className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
-             {isMounted ? (
-                <>
-                    <input
-                        type="text"
-                        readOnly
-                        value={currentUrl}
-                        className="flex-1 truncate bg-transparent font-mono text-muted-foreground outline-none"
-                        aria-label="Room URL"
-                    />
-                    <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={handleCopyUrl}>
-                        <span className="sr-only">Copy URL</span>
-                        <Copy className="h-4 w-4" />
-                    </Button>
-                </>
-            ) : (
-                <>
-                    <div className="flex-1 h-5 rounded-sm bg-muted/50 animate-pulse" />
-                    <div className="h-7 w-7 rounded-sm bg-muted/50 animate-pulse" />
-                </>
-            )}
-        </div>
+        {isMounted && (
+            <div className="mt-4 flex items-center gap-2 rounded-md bg-muted/50 p-2 text-sm">
+                <Link2 className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                <input
+                    type="text"
+                    readOnly
+                    value={currentUrl}
+                    className="flex-1 truncate bg-transparent font-mono text-muted-foreground outline-none"
+                    aria-label="Room URL"
+                />
+                <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={handleCopyUrl}>
+                    <span className="sr-only">Copy URL</span>
+                    <Copy className="h-4 w-4" />
+                </Button>
+            </div>
+        )}
       </CardHeader>
       <CardContent onPaste={handlePaste}>
          <div className="space-y-2">
