@@ -13,7 +13,6 @@ import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { Logo } from '@/components/logo';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 type ClipboardImage = { id: string; data: string };
@@ -499,30 +498,25 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-card/80 backdrop-blur-sm">
       <CardHeader>
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-            <div className='flex items-center gap-3'>
-                <div className="p-2 rounded-lg bg-black">
-                    <Logo className="w-8 h-8" />
-                </div>
-                <div>
-                    <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
-                      FliqShare
-                       <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
-                       {isMounted && (
-                         <Popover>
-                              <PopoverTrigger asChild>
-                                  <Button variant="ghost" size="icon" className="h-6 w-6">
-                                      <QrCode className="h-4 w-4" />
-                                      <span className="sr-only">Show QR Code</span>
-                                  </Button>
-                              </PopoverTrigger>
-                              <PopoverContent className="w-auto p-2 bg-white">
-                                  {currentUrl && <QRCode value={currentUrl} size={128} />}
-                              </PopoverContent>
-                          </Popover>
-                        )}
-                    </CardTitle>
-                    <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
-                </div>
+            <div>
+                <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
+                  FliqShare
+                   <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
+                   {isMounted && (
+                     <Popover>
+                          <PopoverTrigger asChild>
+                              <Button variant="ghost" size="icon" className="h-6 w-6">
+                                  <QrCode className="h-4 w-4" />
+                                  <span className="sr-only">Show QR Code</span>
+                              </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-auto p-2 bg-white">
+                              {currentUrl && <QRCode value={currentUrl} size={128} />}
+                          </PopoverContent>
+                      </Popover>
+                    )}
+                </CardTitle>
+                <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
             </div>
              <div className="text-right w-full sm:w-auto">
                 <Badge variant={getStatusBadgeVariant()} className="text-sm">
