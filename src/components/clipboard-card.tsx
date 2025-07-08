@@ -182,10 +182,8 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('connect', () => {
-      newPeer.send(JSON.stringify({
-        type: 'fullSync',
-        data: { text: textRef.current, images: imagesRef.current, files: filesRef.current }
-      }));
+      // When we connect, we request the full state from the other peer.
+      newPeer.send(JSON.stringify({ type: 'syncRequest' }));
     });
 
     newPeer.on('data', (data) => {
@@ -235,7 +233,15 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
           }
           
           switch(message.type) {
+            case 'syncRequest':
+              // The other peer is requesting our state, so we send it.
+              newPeer.send(JSON.stringify({
+                type: 'fullSync',
+                data: { text: textRef.current, images: imagesRef.current, files: filesRef.current }
+              }));
+              break;
             case 'fullSync':
+              // We've received the full state from another peer.
               setText(message.data.text);
               setImages(message.data.images);
               setFiles(message.data.files || []);
@@ -255,11 +261,8 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
               setFiles([]);
               break;
             default:
-              // Fallback for legacy plain text data & unhandled imageAdd messages
               if (typeof message === 'string') {
                   setText(message);
-              } else if (message.type === 'imageAdd') {
-                  // This is handled by chunking now, but keeping for compatibility
               } else {
                   console.warn("Received malformed or unhandled message:", message);
               }
@@ -278,7 +281,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     newPeer.on('error', (err: PeerError) => {
       if (err.code === 'ERR_CONNECTION_FAILURE') {
         toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not connect to a peer. Please check your network.' });
-      } else {
+      } else if (err.message !== 'User-Initiated Abort, reason=Close called') {
          console.log(`Peer event (error) with ${remotePeerId}: ${err.message}`);
       }
       if (peersRef.current.has(remotePeerId)) {
@@ -290,7 +293,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     if (offer) {
       newPeer.signal(offer);
     }
-  }, [roomCode, toast, broadcastRaw]);
+  }, [roomCode, toast]);
 
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -633,5 +636,3 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     </Card>
   );
 }
-
-    
