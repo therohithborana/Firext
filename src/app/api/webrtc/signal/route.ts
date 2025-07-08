@@ -4,7 +4,7 @@ import {NextRequest, NextResponse} from 'next/server';
 // In-memory store for signaling data.
 // NOTE: This is not suitable for production with multiple server instances.
 // For production, a shared store like Redis or a database should be used.
-const rooms = new Map<string, { offer?: any; answer?: any }>();
+const rooms = new Map<string, { offer?: any; answer?: any; timeoutId?: NodeJS.Timeout }>();
 
 export async function POST(req: NextRequest) {
   try {
@@ -20,6 +20,11 @@ export async function POST(req: NextRequest) {
 
     const roomData = rooms.get(room)!;
 
+    // Clear any existing cleanup timeout to prevent premature deletion
+    if (roomData.timeoutId) {
+        clearTimeout(roomData.timeoutId);
+    }
+
     if (signal.type === 'offer') {
       // A new room is created with an offer
       roomData.offer = signal;
@@ -32,8 +37,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: 'Invalid signal type' }, { status: 400 });
     }
     
-    // Set a timeout to clean up the room after 5 minutes to prevent memory leaks
-    setTimeout(() => {
+    // Set a new timeout to clean up the room after 5 minutes of inactivity
+    roomData.timeoutId = setTimeout(() => {
         if (rooms.has(room)) {
             rooms.delete(room);
         }
@@ -55,7 +60,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Missing room parameter' }, { status: 400 });
   }
 
-  const roomData = rooms.get(room) || null;
+  const roomData = rooms.get(room);
   
-  return NextResponse.json(roomData);
+  if (!roomData) {
+    return NextResponse.json(null);
+  }
+  
+  // Exclude the timeoutId from the response
+  const { timeoutId, ...dataToSend } = roomData;
+
+  return NextResponse.json(dataToSend);
 }

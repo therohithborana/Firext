@@ -26,6 +26,8 @@ export function ClipboardCard() {
 
   const peerRef = useRef<PeerInstance | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isManuallyDisconnecting = useRef(false);
+
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Disconnected');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   
@@ -122,10 +124,24 @@ export function ClipboardCard() {
     });
 
     newPeer.on('close', () => {
-      if (connectionStatus !== 'Disconnected') {
+      // If the user clicked the "Disconnect" button
+      if (isManuallyDisconnecting.current) {
+        isManuallyDisconnecting.current = false; // Reset flag
+        resetConnectionState();
         toast({ variant: 'destructive', title: 'Connection closed.' });
+        return;
       }
-      resetConnectionState();
+
+      // If the close was initiated by the other peer
+      if (initiator) {
+        toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
+        setConnectionStatus('Waiting...');
+        setupPeer(true, currentRoomCode); // Re-create the peer to wait for a new connection
+      } else {
+        // We are the joiner, and the host disconnected.
+        toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
+        resetConnectionState();
+      }
     });
 
     newPeer.on('error', (err) => {
@@ -200,6 +216,7 @@ export function ClipboardCard() {
   };
 
   const handleDisconnect = () => {
+    isManuallyDisconnecting.current = true;
     peerRef.current?.destroy();
   };
 
