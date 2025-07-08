@@ -128,21 +128,25 @@ export function ClipboardCard() {
     });
 
     newPeer.on('close', () => {
-      // If the user clicked the "Disconnect" button
+      // This 'close' event can be triggered by either peer in the connection.
+      
+      // Case 1: A user manually clicks "Close Room" or "Leave Room".
       if (isManuallyDisconnecting.current) {
         isManuallyDisconnecting.current = false; // Reset flag
         resetConnectionState();
-        toast({ variant: 'destructive', title: 'Connection closed.' });
+        toast({ variant: 'destructive', title: 'Connection closed', description: 'You have left the room.' });
         return;
       }
 
-      // If the close was initiated by the other peer
+      // Case 2: We are the host (initiator) and the other peer disconnects.
       if (isInitiator) {
         toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
         setConnectionStatus('Waiting...');
-        setupPeer(true, roomCode); // Re-create the peer to wait for a new connection
+        // Re-create the peer to wait for a new connection.
+        // This will generate a new "offer" and post it to the server, clearing any old "answer".
+        setupPeer(true, roomCode);
       } else {
-        // We are the joiner, and the host disconnected.
+        // Case 3: We are a participant, and the host has disconnected.
         toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
         resetConnectionState();
       }
@@ -150,7 +154,10 @@ export function ClipboardCard() {
 
     newPeer.on('error', (err) => {
       console.error('WebRTC Peer Error:', err);
-      toast({ variant: 'destructive', title: 'Connection Error', description: 'Something went wrong.' });
+      // Avoid showing generic error toast if we are already handling a manual disconnect
+      if (!isManuallyDisconnecting.current) {
+        toast({ variant: 'destructive', title: 'Connection Error', description: 'Something went wrong.' });
+      }
       resetConnectionState(true);
       setConnectionStatus('Error');
     });

@@ -26,10 +26,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (signal.type === 'offer') {
-      // A new room is created with an offer
+      // A new room is created or reset by the host with an offer.
       roomData.offer = signal;
-      // If a user re-creates a room, clear any old answer
-      roomData.answer = undefined; 
+      // When a host re-establishes a room, we must clear any old answer
+      // to allow a new peer to join.
+      delete roomData.answer;
     } else if (signal.type === 'answer') {
       // A user joins and provides an answer
       roomData.answer = signal;
