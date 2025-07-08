@@ -5,111 +5,146 @@ import { useState, useRef, useEffect } from 'react';
 import Peer from 'simple-peer';
 import type { Instance as PeerInstance } from 'simple-peer';
 
-import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, ClipboardPaste, Loader2, Wifi, WifiOff, X, Trash2 } from 'lucide-react';
+import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
-import { Input } from './ui/input';
+import { Button } from './ui/button';
 
-type ConnectionStatus = 'Disconnected' | 'Connecting...' | 'Connected' | 'Error' | 'Waiting...';
+type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 
-export function ClipboardCard() {
+export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const [inputText, setInputText] = useState('');
   const { toast } = useToast();
 
-  const peerRef = useRef<PeerInstance | null>(null);
+  const peerId = useRef(Math.random().toString(36).substring(2));
+  const peersRef = useRef(new Map<string, PeerInstance>());
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const isManuallyDisconnecting = useRef(false);
 
-  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Disconnected');
-  const [isConnecting, setIsConnecting] = useState(false);
-  
-  const [roomCode, setRoomCode] = useState('');
-  const [inputRoomCode, setInputRoomCode] = useState('');
-  const [isInitiator, setIsInitiator] = useState(false);
-
-  const stopPolling = () => {
-    if (pollingIntervalRef.current) {
-      clearInterval(pollingIntervalRef.current);
-      pollingIntervalRef.current = null;
-    }
-  };
-
-  useEffect(() => {
-    // Cleanup peer connection and polling on component unmount
-    return () => {
-      stopPolling();
-      peerRef.current?.destroy();
-    };
-  }, []);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
+  const [peerCount, setPeerCount] = useState(0);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const text = e.target.value;
     setInputText(text);
-    if (peerRef.current?.connected) {
-      peerRef.current.send(text);
-    }
+    // Broadcast text to all connected peers
+    peersRef.current.forEach(peer => {
+      if (peer.connected) {
+        peer.send(text);
+      }
+    });
+  };
+  
+  const handleClearClipboard = () => {
+    const text = '';
+    setInputText(text);
+    peersRef.current.forEach(peer => {
+      if (peer.connected) {
+        peer.send(text);
+      }
+    });
   };
 
-  const resetConnectionState = () => {
-    peerRef.current?.destroy();
-    peerRef.current = null;
+
+  const handleCopyToClipboard = async (text: string) => {
+    if (!text) return;
+    await navigator.clipboard.writeText(text);
+    toast({ title: 'Copied to clipboard!' });
+  };
+  
+  const disconnect = () => {
     stopPolling();
-    setRoomCode('');
-    setInputRoomCode('');
+    peersRef.current.forEach(peer => peer.destroy());
+    peersRef.current.clear();
     setConnectionStatus('Disconnected');
-    setIsInitiator(false);
-    setIsConnecting(false);
+    setPeerCount(0);
+  };
+  
+  useEffect(() => {
+    startPolling();
+    
+    // Cleanup on component unmount
+    return () => {
+        disconnect();
+    };
+  }, [roomCode]);
+  
+  const stopPolling = () => {
+    if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+    }
   }
 
-  const setupPeer = (initiator: boolean, currentRoomCode: string) => {
-    if (peerRef.current) {
-      peerRef.current.destroy();
-    }
-    
-    setIsInitiator(initiator);
-
-    const newPeer = new Peer({ initiator, trickle: false });
-    peerRef.current = newPeer;
-
-    newPeer.on('signal', async (signal) => {
-      if (initiator && signal.type === 'offer') {
-        try {
-          await fetch('/api/webrtc/signal', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ room: currentRoomCode, signal }),
-          });
-          startPollingForAnswer(currentRoomCode);
-        } catch (err) {
-            console.error(err);
-            toast({ variant: 'destructive', title: 'Signaling Error', description: 'Could not contact signaling server.' });
-            setConnectionStatus('Error');
+  const startPolling = () => {
+    stopPolling();
+    pollingIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/webrtc/signal?room=${roomCode}&peerId=${peerId.current}`);
+        if (!res.ok) {
+            throw new Error(`Signaling server returned ${res.status}`);
         }
+        const { peers: newPeerIds, signals } = await res.json();
+
+        setConnectionStatus('Connected');
+        setPeerCount(newPeerIds.length);
+
+        // --- Handle incoming signals ---
+        for (const { from, to, signal, type } of signals) {
+            if (type === 'join' && from !== peerId.current) {
+                // A new peer has joined, if we are the initiator, create a new connection
+                if (peerId.current > from) { // Simple initiator election
+                    connectToPeer(from);
+                }
+            } else if (type === 'leave' && from !== peerId.current) {
+                if (peersRef.current.has(from)) {
+                    peersRef.current.get(from)?.destroy();
+                    peersRef.current.delete(from);
+                }
+            } else if (signal && to === peerId.current) {
+                const peer = peersRef.current.get(from);
+                if (peer) {
+                    peer.signal(signal);
+                } else if (signal.type === 'offer') {
+                    // We have an offer from a new peer
+                    connectToPeer(from, signal);
+                }
+            }
+        }
+      } catch (err) {
+        console.error("Polling error:", err);
+        toast({ variant: 'destructive', title: 'Connection Error', description: 'Lost connection to signaling server.' });
+        disconnect();
       }
-      else if (!initiator && signal.type === 'answer') {
-         try {
-            await fetch('/api/webrtc/signal', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ room: currentRoomCode, signal }),
-            });
-        } catch(err) {
-            console.error(err);
-            toast({ variant: 'destructive', title: 'Signaling Error', description: 'Could not contact signaling server.' });
-            setConnectionStatus('Error');
-        }
+    }, 2000);
+  };
+
+  const connectToPeer = (remotePeerId: string, offer?: any) => {
+    if (peersRef.current.has(remotePeerId)) return;
+
+    const isInitiator = !offer;
+    const newPeer = new Peer({ initiator: isInitiator, trickle: false });
+    peersRef.current.set(remotePeerId, newPeer);
+
+    newPeer.on('signal', async (data) => {
+      // Send signal to the remote peer via the signaling server
+      try {
+        await fetch('/api/webrtc/signal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ room: roomCode, from: peerId.current, to: remotePeerId, signal: data, type: 'signal' }),
+        });
+      } catch (err) {
+        console.error("Failed to send signal", err);
       }
     });
 
     newPeer.on('connect', () => {
-      stopPolling();
-      setConnectionStatus('Connected');
-      toast({ title: 'Connection established!', description: 'Clipboard is now synced.' });
-      setIsConnecting(false);
+      // Connection established
+      setPeerCount(prev => prev + 1); // This might be slightly off, but GET corrects it.
+      newPeer.send(inputText); // Send current clipboard content on connect
     });
 
     newPeer.on('data', (data) => {
@@ -118,219 +153,42 @@ export function ClipboardCard() {
     });
 
     newPeer.on('close', () => {
-      if (isManuallyDisconnecting.current) {
-        isManuallyDisconnecting.current = false;
-        resetConnectionState();
-        toast({ title: 'Connection closed', description: 'You have left the room.' });
-        return;
-      }
-    
-      if (isInitiator) {
-        toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
-        setConnectionStatus('Waiting...');
-        // Re-establish the peer connection in initiator mode to wait for a new peer
-        setupPeer(true, roomCode);
-      } else {
-        toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
-        resetConnectionState();
-      }
+      peersRef.current.delete(remotePeerId);
+      setPeerCount(peersRef.current.size);
     });
 
     newPeer.on('error', (err) => {
-      console.error('WebRTC Peer Error:', err);
-      if (isManuallyDisconnecting.current) return;
-      
-      // Ignore connection errors on the host side, as they are often
-      // followed by a 'close' event which is handled gracefully.
-      // This prevents the host's room from closing unexpectedly.
-      if (isInitiator) {
-        return;
+      console.error('Peer error:', err);
+      if (peersRef.current.has(remotePeerId)) {
+        peersRef.current.get(remotePeerId)?.destroy();
+        peersRef.current.delete(remotePeerId);
+        setPeerCount(peersRef.current.size);
       }
-      
-      toast({ variant: 'destructive', title: 'Connection Error', description: 'The connection was lost.' });
-      resetConnectionState();
     });
-  };
 
-  const handleCreateRoom = () => {
-    const alphabet = 'abcdefghijklmnopqrstuvwxyz';
-    let newRoomCode = '';
-    for (let i = 0; i < 6; i++) {
-        newRoomCode += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
-    }
-    setRoomCode(newRoomCode);
-    setConnectionStatus('Waiting...');
-    setIsConnecting(true);
-    setupPeer(true, newRoomCode);
-  };
-
-  const startPollingForAnswer = (currentRoomCode: string) => {
-    stopPolling();
-    pollingIntervalRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`/api/webrtc/signal?room=${currentRoomCode}`);
-        if (!res.ok) throw new Error("Failed to poll");
-        
-        const data = await res.json();
-        
-        if (data?.answer) {
-          stopPolling();
-          if (peerRef.current && !peerRef.current.destroyed) {
-            peerRef.current.signal(data.answer);
-          }
-        }
-      } catch (err) {
-        console.error("Polling error:", err);
-        stopPolling();
-        setConnectionStatus('Error');
-        toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not get response from peer.' });
-      }
-    }, 2000);
-  };
-  
-  const handleJoinRoom = async () => {
-    const code = inputRoomCode.trim().toLowerCase();
-    if (!code) {
-      toast({ variant: 'destructive', title: 'Please enter a room code.' });
-      return;
-    }
-    setRoomCode(code);
-    setIsConnecting(true);
-    setConnectionStatus('Connecting...');
-    try {
-        const res = await fetch(`/api/webrtc/signal?room=${code}`);
-        if (!res.ok) throw new Error("Room not found or server error");
-        const data = await res.json();
-
-        if (data?.offer) {
-            setupPeer(false, code);
-            if (peerRef.current && !peerRef.current.destroyed) {
-                peerRef.current.signal(data.offer);
-            }
-        } else {
-            toast({ variant: 'destructive', title: 'Room not found', description: 'Please check the code and try again.' });
-            setConnectionStatus('Error');
-            setIsConnecting(false);
-        }
-    } catch (err) {
-        console.error("Join room error:", err);
-        toast({ variant: 'destructive', title: 'Error Joining Room', description: 'Could not connect to the signaling server.' });
-        setConnectionStatus('Error');
-        setIsConnecting(false);
+    if (offer) {
+      newPeer.signal(offer);
     }
   };
 
-  const handleDisconnect = () => {
-    isManuallyDisconnecting.current = true;
-    peerRef.current?.destroy();
-  };
-  
-  const handleCancelConnect = () => {
-    isManuallyDisconnecting.current = true;
-    peerRef.current?.destroy();
-    resetConnectionState();
-  }
-
-  const handleCopyToClipboard = async (text: string) => {
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
-    toast({ title: 'Copied to clipboard!' });
-  };
-  
-  const handleClearClipboard = () => {
-    const text = '';
-    setInputText(text);
-    if (peerRef.current?.connected) {
-      peerRef.current.send(text);
-    }
-  };
 
   const getStatusBadgeVariant = () => {
     switch(connectionStatus) {
       case 'Connected': return 'default';
       case 'Connecting...': return 'secondary';
-      case 'Waiting...': return 'secondary';
-      case 'Disconnected': return 'outline';
-      case 'Error': return 'destructive';
+      case 'Disconnected': return 'destructive';
       default: return 'outline';
     }
   }
-
-  const renderConnectionView = () => (
-    <div className="pt-6 space-y-6 animate-in fade-in">
-      <div className="text-center space-y-2">
-        <h3 className="text-xl font-semibold">Connect to a Peer</h3>
-        <p className="text-muted-foreground">
-          Create a room and share the code, or join an existing room.
-        </p>
-      </div>
-        {(isInitiator && connectionStatus === 'Waiting...') && roomCode ? (
-            <div className="text-center space-y-4 animate-in fade-in">
-                <Label className="text-base">Share this code with your peer:</Label>
-                <div className="relative">
-                    <div className="text-4xl font-bold tracking-widest bg-muted p-4 rounded-lg text-primary">{roomCode}</div>
-                    <Button variant="ghost" size="icon" className="absolute top-1/2 right-2 -translate-y-1/2" onClick={() => handleCopyToClipboard(roomCode)}>
-                        <Copy className="w-6 h-6"/>
-                    </Button>
-                </div>
-                <div className='flex items-center justify-center text-muted-foreground pt-2'>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    <span>Waiting for peer to join...</span>
-                </div>
-            </div>
-        ) : (
-            <div className="space-y-6 animate-in fade-in">
-                <div className="space-y-3">
-                    <Label htmlFor="join-code" className="font-bold text-base">Join a Room</Label>
-                    <div className="flex gap-2">
-                        <Input 
-                            id="join-code" 
-                            value={inputRoomCode} 
-                            onChange={(e) => setInputRoomCode(e.target.value.toLowerCase())} 
-                            placeholder="Enter room code" 
-                            onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
-                            disabled={connectionStatus === 'Connecting...'}
-                        />
-                        <Button onClick={handleJoinRoom} disabled={connectionStatus === 'Connecting...' || !inputRoomCode}>
-                            {connectionStatus === 'Connecting...' ? <Loader2 className="h-4 w-4 animate-spin"/> : "Join"}
-                        </Button>
-                    </div>
-                </div>
-                
-                <div className="relative">
-                    <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-card px-2 text-muted-foreground">Or</span>
-                    </div>
-                </div>
-
-                <Button onClick={handleCreateRoom} className="w-full" disabled={connectionStatus === 'Connecting...'}>
-                    Create a New Room
-                </Button>
-            </div>
-        )}
-         {connectionStatus === 'Error' && (
-          <Button onClick={resetConnectionState} variant="outline" className="w-full mt-4">
-            Try Again
-          </Button>
-        )}
-    </div>
-  );
-
-  const renderClipboardView = () => (
-     <div className="space-y-2">
-      <Label htmlFor="clipboard-textarea">Your Clipboard</Label>
-      <Textarea
-        id="clipboard-textarea"
-        value={inputText}
-        onChange={handleTextChange}
-        placeholder="Your synced clipboard content will appear here..."
-        rows={8}
-      />
-    </div>
-  )
   
-  const showConnectionView = isConnecting || (isInitiator && connectionStatus === 'Waiting...');
+  const getStatusIcon = () => {
+      switch(connectionStatus) {
+        case 'Connecting...': return <Loader2 className="mr-2 h-4 w-4 animate-spin" />;
+        case 'Connected': return <Wifi className="mr-2 h-4 w-4" />;
+        case 'Disconnected': return <WifiOff className="mr-2 h-4 w-4" />;
+        default: return null;
+      }
+  }
 
   return (
     <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-card/80 backdrop-blur-sm">
@@ -343,59 +201,47 @@ export function ClipboardCard() {
                 <div>
                     <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
                       Firext
-                      <Badge variant={getStatusBadgeVariant()} className="text-xs">{connectionStatus}</Badge>
-                       {(connectionStatus === 'Connected' || (isInitiator && connectionStatus === 'Waiting...')) && roomCode && (
-                          <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
-                       )}
+                       <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
                     </CardTitle>
                     <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
                 </div>
             </div>
+             <div className="text-right">
+                <Badge variant={getStatusBadgeVariant()} className="text-sm">
+                    {getStatusIcon()}
+                    {connectionStatus}
+                </Badge>
+                {connectionStatus === 'Connected' && (
+                    <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground mt-1">
+                        <Users className="h-3 w-3" />
+                        <span>{peerCount} {peerCount === 1 ? 'peer' : 'peers'} connected</span>
+                    </div>
+                )}
+            </div>
         </div>
       </CardHeader>
       <CardContent>
-        {renderClipboardView()}
-        {showConnectionView && renderConnectionView()}
+         <div className="space-y-2">
+            <Label htmlFor="clipboard-textarea">Synced Clipboard</Label>
+            <Textarea
+                id="clipboard-textarea"
+                value={inputText}
+                onChange={handleTextChange}
+                placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Your synced clipboard content will appear here...'}
+                rows={10}
+                disabled={connectionStatus !== 'Connected'}
+            />
+        </div>
       </CardContent>
-      <CardFooter className="flex flex-col sm:flex-row gap-2 justify-between bg-muted/30 py-4 px-6">
-        {isConnecting ? (
-            <Button variant="outline" onClick={handleCancelConnect}>
-              <X className="mr-2 h-4 w-4" />
-              Cancel
-            </Button>
-        ) : (
-          <>
-            <div className="flex gap-2">
-              <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText}>
-                <Copy className="mr-2 h-4 w-4" />
-                Copy
-              </Button>
-              <Button variant="outline" onClick={handleClearClipboard} disabled={!inputText}>
-                <Trash2 className="mr-2 h-4 w-4" />
-                Clear
-              </Button>
-            </div>
-            
-             {connectionStatus === 'Connected' || (isInitiator && connectionStatus === 'Waiting...') ? (
-                  isInitiator ? (
-                      <Button onClick={handleDisconnect} variant="destructive">
-                          <WifiOff className="mr-2 h-4 w-4" />
-                          Close Room
-                      </Button>
-                  ) : (
-                      <Button onClick={handleDisconnect} variant="outline">
-                          <WifiOff className="mr-2 h-4 w-4" />
-                          Leave Room
-                      </Button>
-                  )
-              ) : (
-                <Button onClick={() => setIsConnecting(true)}>
-                  <Wifi className="mr-2 h-4 w-4" />
-                  Connect to Peer
-                </Button>
-              )}
-          </>
-        )}
+      <CardFooter className="flex flex-row gap-2 justify-start bg-muted/30 py-4 px-6">
+        <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText}>
+            <Copy className="mr-2 h-4 w-4" />
+            Copy
+        </Button>
+        <Button variant="outline" onClick={handleClearClipboard} disabled={!inputText}>
+            <Trash2 className="mr-2 h-4 w-4" />
+            Clear
+        </Button>
       </CardFooter>
     </Card>
   );
