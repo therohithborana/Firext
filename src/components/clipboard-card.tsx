@@ -19,6 +19,61 @@ type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 type ClipboardContent = { type: 'text' | 'image'; data: string };
 const CHUNK_SIZE = 64 * 1024; // 64KB
 
+const sendChunkedData = (peer: PeerInstance, data: string, fileId: string, contentType: 'image') => {
+    const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
+    let chunkIndex = 0;
+
+    const startMessage = JSON.stringify({
+        protocol: 'firext-chunking',
+        type: 'start',
+        fileId,
+        totalChunks,
+        contentType,
+    });
+    peer.send(startMessage);
+
+    const sendNextChunk = () => {
+        if (chunkIndex >= totalChunks) {
+            return; // Finished
+        }
+
+        // A conservative threshold for the buffer
+        const bufferThreshold = 256 * 1024; // 256KB
+        
+        // Using internal _channel is not ideal, but necessary for bufferedAmount in simple-peer
+        const channel = (peer as any)._channel;
+
+        if (channel && channel.bufferedAmount > bufferThreshold) {
+            // Buffer is getting full, wait and try again
+            setTimeout(sendNextChunk, 50);
+            return;
+        }
+
+        const chunk = data.slice(chunkIndex * CHUNK_SIZE, (chunkIndex + 1) * CHUNK_SIZE);
+        const chunkMessage = JSON.stringify({
+            protocol: 'firext-chunking',
+            type: 'chunk',
+            fileId,
+            index: chunkIndex,
+            data: chunk,
+        });
+
+        try {
+            peer.send(chunkMessage);
+            chunkIndex++;
+            // Use setTimeout to yield to the event loop, preventing UI freeze and buffer overflow
+            setTimeout(sendNextChunk, 0);
+        } catch (error) {
+            console.error("Failed to send chunk, aborting file transfer.", error);
+            // Don't continue sending if an error occurs
+        }
+    };
+
+    // Start the sending process
+    sendNextChunk();
+};
+
+
 export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const [clipboardContent, setClipboardContent] = useState<ClipboardContent>({ type: 'text', data: '' });
   const clipboardContentRef = useRef(clipboardContent);
@@ -48,34 +103,21 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const broadcastContent = useCallback((content: ClipboardContent) => {
     if (content.type === 'image' && content.data.length > CHUNK_SIZE) {
         const fileId = Math.random().toString(36).substring(2);
-        const totalChunks = Math.ceil(content.data.length / CHUNK_SIZE);
-
-        const startMessage = JSON.stringify({
-            protocol: 'firext-chunking',
-            type: 'start',
-            fileId,
-            totalChunks,
-            contentType: 'image',
+        
+        peersRef.current.forEach(peer => {
+            if (peer.connected) {
+                sendChunkedData(peer, content.data, fileId, 'image');
+            }
         });
-
-        peersRef.current.forEach(peer => peer.connected && peer.send(startMessage));
-
-        for (let i = 0; i < totalChunks; i++) {
-            const chunk = content.data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-            const chunkMessage = JSON.stringify({
-                protocol: 'firext-chunking',
-                type: 'chunk',
-                fileId,
-                index: i,
-                data: chunk,
-            });
-            peersRef.current.forEach(peer => peer.connected && peer.send(chunkMessage));
-        }
     } else {
         const message = JSON.stringify(content);
         peersRef.current.forEach(peer => {
             if (peer.connected) {
-                peer.send(message);
+                try {
+                  peer.send(message);
+                } catch(err) {
+                  console.error("Failed to send content:", err);
+                }
             }
         });
     }
