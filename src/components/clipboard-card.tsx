@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useState, useTransition, useRef, useEffect } from 'react';
@@ -12,11 +13,10 @@ import { useToast } from '@/hooks/use-toast';
 import { Copy, ClipboardPaste, Sparkles, Loader2, Wifi, WifiOff } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Badge } from './ui/badge';
-import { cn } from '@/lib/utils';
 import { Label } from './ui/label';
 import { Input } from './ui/input';
 
-type ConnectionStatus = 'Disconnected' | 'Connecting...' | 'Connected' | 'Error';
+type ConnectionStatus = 'Disconnected' | 'Connecting...' | 'Connected' | 'Error' | 'Waiting...';
 
 export function ClipboardCard() {
   const [inputText, setInputText] = useState('');
@@ -25,49 +25,24 @@ export function ClipboardCard() {
   const { toast } = useToast();
 
   const peerRef = useRef<PeerInstance | null>(null);
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Disconnected');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   
-  // Connection Flow State
-  const [connectionStep, setConnectionStep] = useState<'initial' | 'creating' | 'joining'>('initial');
-  // 'creating' state variables
-  const [shareableLink, setShareableLink] = useState('');
-  const [pastedAnswer, setPastedAnswer] = useState('');
-  // 'joining' state variables
-  const [pastedOffer, setPastedOffer] = useState('');
-  const [generatedAnswer, setGeneratedAnswer] = useState('');
+  const [roomCode, setRoomCode] = useState('');
+  const [inputRoomCode, setInputRoomCode] = useState('');
 
-
-  useEffect(() => {
-    // This effect runs when the component mounts to check for an offer in the URL
-    const searchParams = new URLSearchParams(window.location.search);
-    const offerParam = searchParams.get('offer');
-
-    if (offerParam && !peerRef.current?.connected) {
-      try {
-        const decodedOffer = atob(offerParam);
-        
-        // Set up the sheet for joining
-        setConnectionStep('joining');
-        setPastedOffer(decodedOffer);
-        setIsSheetOpen(true); // Open the connection panel
-
-        // Clean URL to prevent re-triggering on refresh
-        const url = new URL(window.location.href);
-        url.searchParams.delete('offer');
-        window.history.replaceState({}, '', url.toString());
-
-        toast({ title: "Offer link detected!", description: "The connection offer has been pasted for you. Please review and generate an answer." });
-      } catch(e) {
-        console.error("Failed to process offer from URL", e);
-        toast({ variant: 'destructive', title: 'Invalid Offer Link', description: 'The link seems to be malformed.' });
-      }
+  const stopPolling = () => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
     }
-  }, []); // Run only once on mount.
+  };
 
   useEffect(() => {
-    // Cleanup peer connection on component unmount
+    // Cleanup peer connection and polling on component unmount
     return () => {
+      stopPolling();
       peerRef.current?.destroy();
     };
   }, []);
@@ -80,29 +55,60 @@ export function ClipboardCard() {
     }
   };
 
-  const setupPeer = (initiator: boolean) => {
+  const resetConnectionState = (keepSheetOpen = false) => {
+    peerRef.current?.destroy();
+    peerRef.current = null;
+    stopPolling();
+    setRoomCode('');
+    setInputRoomCode('');
+    setConnectionStatus('Disconnected');
+    if (!keepSheetOpen) {
+      setIsSheetOpen(false);
+    }
+  }
+
+  const setupPeer = (initiator: boolean, currentRoomCode: string) => {
     if (peerRef.current) {
       peerRef.current.destroy();
     }
-    
-    // Using trickle: false simplifies signaling by creating a single large data chunk.
+
     const newPeer = new Peer({ initiator, trickle: false });
     peerRef.current = newPeer;
-    setConnectionStatus('Connecting...');
 
-    newPeer.on('signal', (data) => {
-      const signalString = JSON.stringify(data);
-      if (initiator) {
-        const encodedOffer = btoa(signalString);
-        const url = new URL(window.location.origin);
-        url.searchParams.set('offer', encodedOffer); // Use origin to keep it clean
-        setShareableLink(url.toString());
-      } else {
-        setGeneratedAnswer(signalString);
+    newPeer.on('signal', async (signal) => {
+      // Initiator sends the offer to the server
+      if (initiator && signal.type === 'offer') {
+        try {
+          await fetch('/api/webrtc/signal', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ room: currentRoomCode, signal }),
+          });
+          startPollingForAnswer(currentRoomCode);
+        } catch (err) {
+            console.error(err);
+            toast({ variant: 'destructive', title: 'Signaling Error', description: 'Could not contact signaling server.' });
+            resetConnectionState();
+        }
+      }
+      // Joiner sends the answer to the server
+      else if (!initiator && signal.type === 'answer') {
+         try {
+            await fetch('/api/webrtc/signal', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ room: currentRoomCode, signal }),
+            });
+        } catch(err) {
+            console.error(err);
+            toast({ variant: 'destructive', title: 'Signaling Error', description: 'Could not contact signaling server.' });
+            resetConnectionState();
+        }
       }
     });
 
     newPeer.on('connect', () => {
+      stopPolling();
       setConnectionStatus('Connected');
       toast({ title: 'Connection established!', description: 'Clipboard is now synced.' });
       setIsSheetOpen(false);
@@ -127,58 +133,76 @@ export function ClipboardCard() {
     });
   };
 
-  const resetConnectionState = (keepSheetOpen = false) => {
-    peerRef.current = null;
-    setShareableLink('');
-    setPastedOffer('');
-    setPastedAnswer('');
-    setGeneratedAnswer('');
-    setConnectionStep('initial');
-    if (!keepSheetOpen) {
-      setIsSheetOpen(false);
-    }
-  }
-
-  const handleStartCreating = () => {
-    setConnectionStep('creating');
-    setupPeer(true);
+  const handleCreateRoom = () => {
+    const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    setRoomCode(newRoomCode);
+    setConnectionStatus('Waiting...');
+    setupPeer(true, newRoomCode);
   };
 
-  const handleAcceptOffer = () => {
-    if (!pastedOffer) {
-      toast({ variant: 'destructive', title: 'Invalid Offer', description: 'Please paste the offer data from the other device.' });
-      return;
-    }
-    setupPeer(false);
-    try {
-      peerRef.current?.signal(JSON.parse(pastedOffer));
-    } catch(e) {
-       toast({ variant: 'destructive', title: 'Invalid Offer', description: 'The pasted offer data is malformed.' });
-    }
+  const startPollingForAnswer = (currentRoomCode: string) => {
+    stopPolling();
+    pollingIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/webrtc/signal?room=${currentRoomCode}`);
+        if (!res.ok) throw new Error("Failed to poll");
+        
+        const data = await res.json();
+        
+        if (data?.answer) {
+          stopPolling();
+          if (peerRef.current && !peerRef.current.destroyed) {
+            peerRef.current.signal(data.answer);
+          }
+        }
+      } catch (err) {
+        console.error("Polling error:", err);
+        stopPolling();
+        resetConnectionState();
+        toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not get response from peer.' });
+      }
+    }, 2000); // Poll every 2 seconds
   };
   
-  const handleSignalWithAnswer = () => {
-     if (!pastedAnswer) {
-      toast({ variant: 'destructive', title: 'Invalid Answer', description: 'Please paste the answer data from the other device.' });
+  const handleJoinRoom = async () => {
+    const code = inputRoomCode.trim().toUpperCase();
+    if (!code) {
+      toast({ variant: 'destructive', title: 'Please enter a room code.' });
       return;
     }
+
+    setConnectionStatus('Connecting...');
     try {
-      peerRef.current?.signal(JSON.parse(pastedAnswer));
-    } catch(e) {
-      toast({ variant: 'destructive', title: 'Invalid Answer', description: 'The pasted answer data is malformed.' });
+        const res = await fetch(`/api/webrtc/signal?room=${code}`);
+        if (!res.ok) throw new Error("Room not found or server error");
+        const data = await res.json();
+
+        if (data?.offer) {
+            setupPeer(false, code);
+            setTimeout(() => {
+                if (peerRef.current && !peerRef.current.destroyed) {
+                    peerRef.current.signal(data.offer);
+                }
+            }, 100);
+        } else {
+            toast({ variant: 'destructive', title: 'Room not found', description: 'Please check the code and try again.' });
+            setConnectionStatus('Error');
+        }
+    } catch (err) {
+        console.error("Join room error:", err);
+        toast({ variant: 'destructive', title: 'Error Joining Room', description: 'Could not connect to the signaling server.' });
+        setConnectionStatus('Error');
     }
   };
 
   const handleDisconnect = () => {
     peerRef.current?.destroy();
-    // The 'close' event on the peer will handle resetting state and showing the toast.
-    setConnectionStatus('Disconnected');
   };
 
-  const handleCopyToClipboard = async (text: string, type: string) => {
+  const handleCopyToClipboard = async (text: string) => {
     if (!text) return;
     await navigator.clipboard.writeText(text);
-    toast({ title: `Copied ${type} to clipboard!` });
+    toast({ title: 'Copied to clipboard!' });
   };
 
   const handleSuggest = () => {
@@ -218,6 +242,7 @@ export function ClipboardCard() {
     switch(connectionStatus) {
       case 'Connected': return 'default';
       case 'Connecting...': return 'secondary';
+      case 'Waiting...': return 'secondary';
       case 'Disconnected': return 'outline';
       case 'Error': return 'destructive';
       default: return 'outline';
@@ -293,13 +318,13 @@ export function ClipboardCard() {
               )}
               Suggest with AI
             </Button>
-            <Button onClick={() => handleCopyToClipboard(inputText, 'Text')} disabled={!inputText || isSuggesting}>
+            <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText || isSuggesting}>
               <Copy className="mr-2 h-4 w-4" />
               Copy
             </Button>
           </div>
           
-           {peerRef.current?.connected ? (
+           {connectionStatus === 'Connected' ? (
               <Button onClick={handleDisconnect} variant="destructive" className="gap-2">
                 <WifiOff />
                 Disconnect
@@ -314,67 +339,60 @@ export function ClipboardCard() {
                 </SheetTrigger>
                 <SheetContent className="w-full sm:max-w-lg">
                   <SheetHeader>
-                    <SheetTitle>Peer-to-Peer Connection</SheetTitle>
+                    <SheetTitle>Connect via Room Code</SheetTitle>
                     <SheetDescription>
-                      Connect to another device directly without a server. This requires sharing a link and a code between devices once.
-                      <br/>
-                      <span className={cn('font-semibold', {
-                          'text-green-500': connectionStatus === 'Connected',
-                          'text-red-500': connectionStatus === 'Error' || connectionStatus === 'Disconnected',
-                          'text-yellow-500': connectionStatus === 'Connecting...'
-                      })}>Status: {connectionStatus}</span>
+                      Create a room and share the code, or join an existing room.
+                       <br/>
+                       <span className='font-semibold'>Status: {connectionStatus}</span>
                     </SheetDescription>
                   </SheetHeader>
-                  <div className="py-4">
-                    {connectionStep === 'initial' && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
-                          <Button variant="outline" onClick={() => setConnectionStep('joining')}>Join Connection</Button>
-                          <Button onClick={handleStartCreating}>Start a New Connection</Button>
-                      </div>
-                    )}
-
-                    {connectionStep === 'creating' && (
-                       <div className='space-y-6 pt-4'>
-                          <div className="space-y-3">
-                            <Label className='font-bold text-base'>Step 1: Share Link</Label>
-                            <p className="text-sm text-muted-foreground">Copy this link and open it on your other device. It contains the connection offer.</p>
-                            <div className="flex gap-2">
-                              <Input id="share-link" readOnly value={shareableLink} className="text-xs" onFocus={(e) => e.target.select()}/>
-                              <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(shareableLink, 'Link')}><Copy className="w-4 h-4"/></Button>
+                    <div className="py-6 space-y-6">
+                        {connectionStatus === 'Waiting...' && roomCode ? (
+                            <div className="text-center space-y-4 animate-in fade-in">
+                                <Label className="text-base">Share this code with your peer:</Label>
+                                <div className="relative">
+                                    <div className="text-4xl font-bold tracking-widest bg-muted p-4 rounded-lg text-primary">{roomCode}</div>
+                                    <Button variant="ghost" size="icon" className="absolute top-1/2 right-2 -translate-y-1/2" onClick={() => handleCopyToClipboard(roomCode)}>
+                                        <Copy className="w-6 h-6"/>
+                                    </Button>
+                                </div>
+                                <div className='flex items-center justify-center text-muted-foreground pt-2'>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    <span>Waiting for peer to join...</span>
+                                </div>
                             </div>
-                          </div>
-                          <div className="space-y-3">
-                            <Label className='font-bold text-base'>Step 2: Paste Answer</Label>
-                            <p className="text-sm text-muted-foreground">Once the other device generates an answer, paste it here to complete the connection.</p>
-                            <Textarea id="answer-input" value={pastedAnswer} onChange={(e) => setPastedAnswer(e.target.value)} placeholder="Paste answer data here..." rows={4} className="text-xs"/>
-                            <Button onClick={handleSignalWithAnswer} disabled={!pastedAnswer}>Complete Connection</Button>
-                          </div>
-                        </div>
-                    )}
-                    
-                    {connectionStep === 'joining' && (
-                        <div className='space-y-6 pt-4'>
-                           <div className="space-y-3">
-                            <Label className='font-bold text-base'>Step 1: Provide Offer</Label>
-                            <p className="text-sm text-muted-foreground">Paste the offer from the first device. If you opened a link, this should be pre-filled.</p>
-                            <Textarea id="paste-offer-input" value={pastedOffer} onChange={(e) => setPastedOffer(e.target.value)} placeholder="Offer data from first device..." rows={4} className="text-xs"/>
-                            <Button onClick={handleAcceptOffer} disabled={!pastedOffer || !!generatedAnswer}>Generate Answer</Button>
-                          </div>
+                        ) : (
+                            <div className="space-y-6 animate-in fade-in">
+                                <div className="space-y-3">
+                                    <Label htmlFor="join-code" className="font-bold text-base">Join a Room</Label>
+                                    <div className="flex gap-2">
+                                        <Input 
+                                            id="join-code" 
+                                            value={inputRoomCode} 
+                                            onChange={(e) => setInputRoomCode(e.target.value.toUpperCase())} 
+                                            placeholder="Enter Room Code" 
+                                            onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
+                                            disabled={connectionStatus === 'Connecting...'}
+                                        />
+                                        <Button onClick={handleJoinRoom} disabled={connectionStatus === 'Connecting...' || !inputRoomCode}>
+                                            {connectionStatus === 'Connecting...' && !roomCode ? <Loader2 className="h-4 w-4 animate-spin"/> : "Join"}
+                                        </Button>
+                                    </div>
+                                </div>
+                                
+                                <div className="relative">
+                                    <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+                                    <div className="relative flex justify-center text-xs uppercase">
+                                        <span className="bg-background px-2 text-muted-foreground">Or</span>
+                                    </div>
+                                </div>
 
-                          {generatedAnswer && (
-                            <div className="space-y-3 animate-in fade-in">
-                                <Label className='font-bold text-base'>Step 2: Copy Answer</Label>
-                                <p className="text-sm text-muted-foreground">Copy this generated answer and paste it back into the first device.</p>
-                               <div className="flex gap-2">
-                                  <Textarea id="answer-string" readOnly value={generatedAnswer} rows={4} className="text-xs" onFocus={(e) => e.target.select()}/>
-                                  <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(generatedAnswer, 'Answer')}><Copy className="w-4 h-4"/></Button>
-                               </div>
-                             </div>
-                           )}
-                        </div>
-                    )}
-
-                  </div>
+                                <Button onClick={handleCreateRoom} className="w-full" disabled={connectionStatus === 'Connecting...'}>
+                                    Create a New Room
+                                </Button>
+                            </div>
+                        )}
+                    </div>
                 </SheetContent>
               </Sheet>
             )}
