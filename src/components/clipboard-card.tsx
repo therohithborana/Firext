@@ -17,6 +17,7 @@ type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
 
 export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const [inputText, setInputText] = useState('');
+  const inputTextRef = useRef(inputText);
   const { toast } = useToast();
 
   const peerId = useRef(Math.random().toString(36).substring(2));
@@ -25,6 +26,10 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Connecting...');
   const [peerCount, setPeerCount] = useState(0);
+
+  useEffect(() => {
+    inputTextRef.current = inputText;
+  }, [inputText]);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const text = e.target.value;
@@ -144,7 +149,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     newPeer.on('connect', () => {
       // Connection established
       setPeerCount(prev => prev + 1); // This might be slightly off, but GET corrects it.
-      newPeer.send(inputText); // Send current clipboard content on connect
+      newPeer.send(inputTextRef.current); // Send current clipboard content on connect
     });
 
     newPeer.on('data', (data) => {
