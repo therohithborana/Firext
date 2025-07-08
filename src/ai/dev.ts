@@ -1,4 +1,1 @@
-import { config } from 'dotenv';
-config();
-
-import '@/ai/flows/suggest-phrases.ts';
+// This file is intentionally left blank.

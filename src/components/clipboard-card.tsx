@@ -1,16 +1,15 @@
 
 "use client";
 
-import { useState, useTransition, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Peer from 'simple-peer';
 import type { Instance as PeerInstance } from 'simple-peer';
-import { suggestPhrases } from '@/ai/flows/suggest-phrases';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, ClipboardPaste, Sparkles, Loader2, Wifi, WifiOff } from 'lucide-react';
+import { Copy, ClipboardPaste, Loader2, Wifi, WifiOff } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
@@ -20,8 +19,6 @@ type ConnectionStatus = 'Disconnected' | 'Connecting...' | 'Connected' | 'Error'
 
 export function ClipboardCard() {
   const [inputText, setInputText] = useState('');
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  const [isSuggesting, startSuggestTransition] = useTransition();
   const { toast } = useToast();
 
   const peerRef = useRef<PeerInstance | null>(null);
@@ -236,39 +233,6 @@ export function ClipboardCard() {
     await navigator.clipboard.writeText(text);
     toast({ title: 'Copied to clipboard!' });
   };
-
-  const handleSuggest = () => {
-    if (!inputText) {
-        toast({
-            variant: 'default',
-            title: 'Nothing to suggest',
-            description: 'The clipboard is empty.',
-        });
-        return;
-    }
-    startSuggestTransition(async () => {
-      try {
-        setSuggestions([]);
-        const result = await suggestPhrases({ clipboardContent: inputText });
-        setSuggestions(result.suggestions);
-      } catch (err) {
-        console.error('Failed to get suggestions: ', err);
-        toast({
-          variant: 'destructive',
-          title: 'AI Error',
-          description: 'Could not fetch suggestions.',
-        });
-      }
-    });
-  };
-
-  const handleSuggestionClick = (suggestion: string) => {
-    setInputText(suggestion);
-    if (peerRef.current?.connected) {
-      peerRef.current.send(suggestion);
-    }
-    setSuggestions([]);
-  };
   
   const getStatusBadgeVariant = () => {
     switch(connectionStatus) {
@@ -295,7 +259,7 @@ export function ClipboardCard() {
 
   return (
     <>
-      <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95">
+      <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-background/50 backdrop-blur-sm">
         <CardHeader>
           <div className="flex items-center justify-between">
               <div className='flex items-center gap-3'>
@@ -304,61 +268,32 @@ export function ClipboardCard() {
                   </div>
                   <div>
                       <CardTitle className="text-2xl font-bold font-headline flex items-center gap-2">
-                        Smart Clipboard
+                        Firext
                         <Badge variant={getStatusBadgeVariant()} className="text-xs">{connectionStatus}</Badge>
                          {connectionStatus === 'Connected' && roomCode && (
                             <Badge variant="outline" className="text-xs font-mono tracking-widest">{roomCode}</Badge>
                          )}
                       </CardTitle>
-                      <CardDescription>An intelligent, peer-to-peer clipboard with AI suggestions.</CardDescription>
+                      <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
                   </div>
               </div>
           </div>
         </CardHeader>
-        <CardContent className="space-y-6">
+        <CardContent>
           <div className="space-y-2">
             <Label htmlFor="clipboard-textarea">Your Clipboard</Label>
             <Textarea
               id="clipboard-textarea"
               value={inputText}
               onChange={handleTextChange}
-              placeholder="Type or paste text here to get AI suggestions..."
+              placeholder="Your synced clipboard content will appear here..."
               rows={8}
             />
           </div>
-
-          {isSuggesting && (
-            <div className="flex items-center justify-center p-4">
-              <Loader2 className="w-6 h-6 animate-spin text-primary" />
-              <p className="ml-2 text-muted-foreground">Getting suggestions...</p>
-            </div>
-          )}
-
-          {suggestions.length > 0 && (
-            <div className="space-y-2 animate-in fade-in">
-              <h4 className="text-sm font-medium text-muted-foreground">AI Suggestions</h4>
-              <div className="flex flex-wrap gap-2">
-                {suggestions.map((s, i) => (
-                  <Button key={i} variant="outline" size="sm" onClick={() => handleSuggestionClick(s)}>
-                    {s}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
-
         </CardContent>
         <CardFooter className="flex flex-col sm:flex-row gap-2 justify-between bg-muted/30 py-4 px-6">
           <div className="flex gap-2">
-             <Button onClick={handleSuggest} variant="ghost" disabled={isSuggesting || !inputText}>
-              {isSuggesting ? (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              ) : (
-                <Sparkles className="mr-2 h-4 w-4" />
-              )}
-              Suggest with AI
-            </Button>
-            <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText || isSuggesting}>
+            <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText}>
               <Copy className="mr-2 h-4 w-4" />
               Copy
             </Button>
