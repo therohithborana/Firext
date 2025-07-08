@@ -16,10 +16,11 @@ import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 
 type ConnectionStatus = 'Connecting...' | 'Connected' | 'Disconnected';
+type ClipboardContent = { type: 'text' | 'image'; data: string };
 
 export function ClipboardCard({ roomCode }: { roomCode: string }) {
-  const [inputText, setInputText] = useState('');
-  const inputTextRef = useRef(inputText);
+  const [clipboardContent, setClipboardContent] = useState<ClipboardContent>({ type: 'text', data: '' });
+  const clipboardContentRef = useRef(clipboardContent);
   const { toast } = useToast();
 
   const peerId = useRef<string>('');
@@ -32,22 +33,29 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
-    // This effect runs only once on the client, after the initial render.
-    // We initialize all client-side-only values here to prevent hydration errors.
     peerId.current = Math.random().toString(36).substring(2);
     setCurrentUrl(window.location.href);
     setIsMounted(true);
   }, []);
 
   useEffect(() => {
-    inputTextRef.current = inputText;
-  }, [inputText]);
+    clipboardContentRef.current = clipboardContent;
+  }, [clipboardContent]);
   
+  const broadcastContent = useCallback((content: ClipboardContent) => {
+    const message = JSON.stringify(content);
+    peersRef.current.forEach(peer => {
+      if (peer.connected) {
+        peer.send(message);
+      }
+    });
+  }, []);
+
   const connectToPeer = useCallback((remotePeerId: string, isInitiator: boolean, offer?: any) => {
     if (peersRef.current.has(remotePeerId)) {
       const existingPeer = peersRef.current.get(remotePeerId);
       if (existingPeer && !existingPeer.destroyed) {
-        return; // Already have a live connection
+        return;
       }
     }
 
@@ -64,7 +72,6 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     peersRef.current.set(remotePeerId, newPeer);
 
     newPeer.on('signal', async (data) => {
-      // Send signal to the remote peer via the signaling server
       try {
         await fetch('/api/webrtc/signal', {
           method: 'POST',
@@ -77,13 +84,22 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('connect', () => {
-      // When a new peer connects, send them the current clipboard content
-      newPeer.send(inputTextRef.current);
+      newPeer.send(JSON.stringify(clipboardContentRef.current));
     });
 
     newPeer.on('data', (data) => {
       const receivedText = data.toString();
-      setInputText(receivedText);
+       try {
+        const receivedContent = JSON.parse(receivedText);
+        if ((receivedContent.type === 'text' || receivedContent.type === 'image') && typeof receivedContent.data === 'string') {
+            setClipboardContent(receivedContent);
+        } else {
+             console.warn("Received malformed content object:", receivedContent);
+        }
+      } catch (error) {
+        console.warn("Received non-JSON data, treating as text:", receivedText);
+        setClipboardContent({ type: 'text', data: receivedText });
+      }
     });
 
     newPeer.on('close', () => {
@@ -109,25 +125,16 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const text = e.target.value;
-    setInputText(text);
-    // Broadcast text to all connected peers
-    peersRef.current.forEach(peer => {
-      if (peer.connected) {
-        peer.send(text);
-      }
-    });
+    const newContent: ClipboardContent = { type: 'text', data: text };
+    setClipboardContent(newContent);
+    broadcastContent(newContent);
   };
   
   const handleClearClipboard = () => {
-    const text = '';
-    setInputText(text);
-    peersRef.current.forEach(peer => {
-      if (peer.connected) {
-        peer.send(text);
-      }
-    });
+    const newContent: ClipboardContent = { type: 'text', data: '' };
+    setClipboardContent(newContent);
+    broadcastContent(newContent);
   };
-
 
   const handleCopyToClipboard = async (text: string) => {
     if (!text) return;
@@ -141,6 +148,29 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     toast({ title: 'Room URL copied!' });
   };
   
+  const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+        if (items[i].type.indexOf("image") !== -1) {
+            e.preventDefault();
+            const blob = items[i].getAsFile();
+            if (!blob) return;
+
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const dataUri = event.target?.result as string;
+                if(dataUri) {
+                    const newContent: ClipboardContent = { type: 'image', data: dataUri };
+                    setClipboardContent(newContent);
+                    broadcastContent(newContent);
+                }
+            };
+            reader.readAsDataURL(blob);
+            return;
+        }
+    }
+  };
+
   const disconnect = () => {
     stopPolling();
     peersRef.current.forEach(peer => peer.destroy());
@@ -169,24 +199,20 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         setConnectionStatus('Connected');
         setPeerCount(newPeerIds.length);
 
-        // --- Handle new peers joining ---
         const currentPeers = Array.from(peersRef.current.keys());
         const peersToConnect = newPeerIds.filter((p: string) => p !== peerId.current && !currentPeers.includes(p));
         peersToConnect.forEach((remotePeerId: string) => {
-            // we are the "initiator" if our ID is alphabetically smaller
             if(peerId.current > remotePeerId) {
                 connectToPeer(remotePeerId, true);
             }
         });
 
-        // --- Handle incoming signals ---
         for (const { from, to, signal, type } of signals) {
            if (signal && to === peerId.current) {
                 const peer = peersRef.current.get(from);
                 if (peer && !peer.destroyed) {
                     peer.signal(signal);
                 } else if (!peer) {
-                    // This is an offer from a new peer
                     connectToPeer(from, false, signal);
                 }
             } else if (type === 'leave' && from !== peerId.current) {
@@ -205,12 +231,10 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   }, [roomCode, connectToPeer, toast]);
   
   useEffect(() => {
-    // We only start polling after the component has mounted and client-side values are set.
     if (!isMounted) return;
     
     startPolling();
     
-    // Cleanup on component unmount
     return () => {
         disconnect();
     };
@@ -297,32 +321,41 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                 </>
             ) : (
                 <>
-                    {/* Placeholders to prevent layout shift */}
                     <div className="flex-1 h-5 rounded-sm bg-muted/50 animate-pulse" />
                     <div className="h-7 w-7 rounded-sm bg-muted/50 animate-pulse" />
                 </>
             )}
         </div>
       </CardHeader>
-      <CardContent>
+      <CardContent onPaste={handlePaste}>
          <div className="space-y-2">
             <Label htmlFor="clipboard-textarea">Synced Clipboard</Label>
+            {clipboardContent.type === 'image' && clipboardContent.data ? (
+                <div className="mb-2 relative p-2 border rounded-md min-h-[220px] flex items-center justify-center bg-muted/20">
+                    <img
+                        src={clipboardContent.data}
+                        alt="Pasted clipboard content"
+                        className="max-w-full max-h-full object-contain rounded-md"
+                        style={{ maxHeight: '220px' }}
+                    />
+                </div>
+            ) : null}
             <Textarea
                 id="clipboard-textarea"
-                value={inputText}
+                value={clipboardContent.type === 'text' ? clipboardContent.data : ''}
                 onChange={handleTextChange}
-                placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Your synced clipboard content will appear here...'}
-                rows={10}
+                placeholder={connectionStatus === 'Connecting...' ? 'Connecting to room...' : 'Type or paste content here...'}
+                rows={clipboardContent.type === 'image' && clipboardContent.data ? 4 : 10}
                 disabled={connectionStatus !== 'Connected' && peerCount === 0}
             />
         </div>
       </CardContent>
       <CardFooter className="flex flex-col sm:flex-row items-stretch gap-2 justify-start bg-muted/30 py-4 px-6">
-        <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText} className="w-full sm:w-auto">
+        <Button onClick={() => handleCopyToClipboard(clipboardContent.data)} disabled={clipboardContent.type !== 'text' || !clipboardContent.data}>
             <Copy className="mr-2 h-4 w-4" />
-            Copy
+            Copy Text
         </Button>
-        <Button variant="outline" onClick={handleClearClipboard} disabled={!inputText} className="w-full sm:w-auto">
+        <Button variant="outline" onClick={handleClearClipboard} disabled={!clipboardContent.data}>
             <Trash2 className="mr-2 h-4 w-4" />
             Clear
         </Button>
