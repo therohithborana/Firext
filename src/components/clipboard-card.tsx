@@ -121,14 +121,13 @@ export function ClipboardCard() {
       if (isManuallyDisconnecting.current) {
         isManuallyDisconnecting.current = false;
         resetConnectionState();
-        toast({ variant: 'destructive', title: 'Connection closed', description: 'You have left the room.' });
+        toast({ title: 'Connection closed', description: 'You have left the room.' });
         return;
       }
     
       if (isInitiator) {
         toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
         setConnectionStatus('Waiting...');
-        peerRef.current = null;
         setupPeer(true, roomCode);
       } else {
         toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
@@ -140,13 +139,15 @@ export function ClipboardCard() {
       console.error('WebRTC Peer Error:', err);
       if (isManuallyDisconnecting.current) return;
       
+      // Ignore connection errors on the host side, as they are often
+      // followed by a 'close' event which is handled gracefully.
+      // This prevents the host's room from closing unexpectedly.
       if (isInitiator) {
         return;
       }
       
       toast({ variant: 'destructive', title: 'Connection Error', description: 'The connection was lost.' });
       resetConnectionState();
-      setConnectionStatus('Error');
     });
   };
 
@@ -255,14 +256,14 @@ export function ClipboardCard() {
   }
 
   const renderConnectionView = () => (
-    <div className="py-6 space-y-6 animate-in fade-in">
+    <div className="pt-6 space-y-6 animate-in fade-in">
       <div className="text-center space-y-2">
         <h3 className="text-xl font-semibold">Connect to a Peer</h3>
         <p className="text-muted-foreground">
           Create a room and share the code, or join an existing room.
         </p>
       </div>
-        {connectionStatus === 'Waiting...' && roomCode ? (
+        {(isInitiator && connectionStatus === 'Waiting...') && roomCode ? (
             <div className="text-center space-y-4 animate-in fade-in">
                 <Label className="text-base">Share this code with your peer:</Label>
                 <div className="relative">
@@ -287,9 +288,9 @@ export function ClipboardCard() {
                             onChange={(e) => setInputRoomCode(e.target.value.toLowerCase())} 
                             placeholder="Enter room code" 
                             onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
-                            disabled={connectionStatus === 'Connecting...'}
+                            disabled={isConnecting}
                         />
-                        <Button onClick={handleJoinRoom} disabled={connectionStatus === 'Connecting...' || !inputRoomCode}>
+                        <Button onClick={handleJoinRoom} disabled={isConnecting || !inputRoomCode}>
                             {connectionStatus === 'Connecting...' ? <Loader2 className="h-4 w-4 animate-spin"/> : "Join"}
                         </Button>
                     </div>
@@ -298,17 +299,17 @@ export function ClipboardCard() {
                 <div className="relative">
                     <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
                     <div className="relative flex justify-center text-xs uppercase">
-                        <span className="bg-background px-2 text-muted-foreground">Or</span>
+                        <span className="bg-card px-2 text-muted-foreground">Or</span>
                     </div>
                 </div>
 
-                <Button onClick={handleCreateRoom} className="w-full" disabled={connectionStatus === 'Connecting...' || connectionStatus === 'Waiting...'}>
+                <Button onClick={handleCreateRoom} className="w-full" disabled={isConnecting}>
                     Create a New Room
                 </Button>
             </div>
         )}
          {connectionStatus === 'Error' && (
-          <Button onClick={resetConnectionState} variant="outline" className="w-full">
+          <Button onClick={resetConnectionState} variant="outline" className="w-full mt-4">
             Try Again
           </Button>
         )}
@@ -328,7 +329,7 @@ export function ClipboardCard() {
     </div>
   )
   
-  const showClipboard = !isConnecting && (connectionStatus === 'Connected' || connectionStatus === 'Disconnected');
+  const showConnectionView = isConnecting || (isInitiator && connectionStatus === 'Waiting...');
 
   return (
     <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-card/80 backdrop-blur-sm">
@@ -352,7 +353,8 @@ export function ClipboardCard() {
         </div>
       </CardHeader>
       <CardContent>
-        {showClipboard ? renderClipboardView() : renderConnectionView()}
+        {renderClipboardView()}
+        {showConnectionView && renderConnectionView()}
       </CardContent>
       <CardFooter className="flex flex-col sm:flex-row gap-2 justify-between bg-muted/30 py-4 px-6">
         {isConnecting ? (
