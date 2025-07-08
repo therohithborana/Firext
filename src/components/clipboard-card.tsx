@@ -128,6 +128,7 @@ export function ClipboardCard() {
       if (isInitiator) {
         toast({ title: 'Peer disconnected', description: 'The room is still open. Waiting for a new peer...' });
         setConnectionStatus('Waiting...');
+        // Re-establish the peer connection in initiator mode to wait for a new peer
         setupPeer(true, roomCode);
       } else {
         toast({ variant: 'destructive', title: 'Host disconnected', description: 'The room has been closed.' });
@@ -288,9 +289,9 @@ export function ClipboardCard() {
                             onChange={(e) => setInputRoomCode(e.target.value.toLowerCase())} 
                             placeholder="Enter room code" 
                             onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
-                            disabled={isConnecting}
+                            disabled={connectionStatus === 'Connecting...'}
                         />
-                        <Button onClick={handleJoinRoom} disabled={isConnecting || !inputRoomCode}>
+                        <Button onClick={handleJoinRoom} disabled={connectionStatus === 'Connecting...' || !inputRoomCode}>
                             {connectionStatus === 'Connecting...' ? <Loader2 className="h-4 w-4 animate-spin"/> : "Join"}
                         </Button>
                     </div>
@@ -303,7 +304,7 @@ export function ClipboardCard() {
                     </div>
                 </div>
 
-                <Button onClick={handleCreateRoom} className="w-full" disabled={isConnecting}>
+                <Button onClick={handleCreateRoom} className="w-full" disabled={connectionStatus === 'Connecting...'}>
                     Create a New Room
                 </Button>
             </div>
