@@ -11,7 +11,6 @@ import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
 import { Copy, ClipboardPaste, Sparkles, Loader2, Wifi, WifiOff } from 'lucide-react';
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from './ui/badge';
 import { cn } from '@/lib/utils';
 import { Label } from './ui/label';
@@ -28,13 +27,16 @@ export function ClipboardCard() {
   const peerRef = useRef<PeerInstance | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('Disconnected');
   const [isSheetOpen, setIsSheetOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState('create');
-
-  // Connection data states
+  
+  // Connection Flow State
+  const [connectionStep, setConnectionStep] = useState<'initial' | 'creating' | 'joining'>('initial');
+  // 'creating' state variables
   const [shareableLink, setShareableLink] = useState('');
-  const [answer, setAnswer] = useState('');
-  const [pastedOffer, setPastedOffer] = useState('');
   const [pastedAnswer, setPastedAnswer] = useState('');
+  // 'joining' state variables
+  const [pastedOffer, setPastedOffer] = useState('');
+  const [generatedAnswer, setGeneratedAnswer] = useState('');
+
 
   useEffect(() => {
     // This effect runs when the component mounts to check for an offer in the URL
@@ -45,8 +47,8 @@ export function ClipboardCard() {
       try {
         const decodedOffer = atob(offerParam);
         
-        // Pre-fill the join connection form
-        setActiveTab('join');
+        // Set up the sheet for joining
+        setConnectionStep('joining');
         setPastedOffer(decodedOffer);
         setIsSheetOpen(true); // Open the connection panel
 
@@ -92,11 +94,11 @@ export function ClipboardCard() {
       const signalString = JSON.stringify(data);
       if (initiator) {
         const encodedOffer = btoa(signalString);
-        const url = new URL(window.location.href);
-        url.searchParams.set('offer', encodedOffer);
+        const url = new URL(window.location.origin);
+        url.searchParams.set('offer', encodedOffer); // Use origin to keep it clean
         setShareableLink(url.toString());
       } else {
-        setAnswer(signalString);
+        setGeneratedAnswer(signalString);
       }
     });
 
@@ -125,16 +127,20 @@ export function ClipboardCard() {
     });
   };
 
-  const resetConnectionState = () => {
+  const resetConnectionState = (keepSheetOpen = false) => {
     peerRef.current = null;
     setShareableLink('');
-    setAnswer('');
     setPastedOffer('');
     setPastedAnswer('');
-    setActiveTab('create');
+    setGeneratedAnswer('');
+    setConnectionStep('initial');
+    if (!keepSheetOpen) {
+      setIsSheetOpen(false);
+    }
   }
 
-  const handleCreateConnectionLink = () => {
+  const handleStartCreating = () => {
+    setConnectionStep('creating');
     setupPeer(true);
   };
 
@@ -151,7 +157,7 @@ export function ClipboardCard() {
     }
   };
   
-  const handleCompleteConnection = () => {
+  const handleSignalWithAnswer = () => {
      if (!pastedAnswer) {
       toast({ variant: 'destructive', title: 'Invalid Answer', description: 'Please paste the answer data from the other device.' });
       return;
@@ -165,6 +171,8 @@ export function ClipboardCard() {
 
   const handleDisconnect = () => {
     peerRef.current?.destroy();
+    // The 'close' event on the peer will handle resetting state and showing the toast.
+    setConnectionStatus('Disconnected');
   };
 
   const handleCopyToClipboard = async (text: string, type: string) => {
@@ -215,6 +223,13 @@ export function ClipboardCard() {
       default: return 'outline';
     }
   }
+
+  // Reset connection flow when sheet is closed manually
+  useEffect(() => {
+    if (!isSheetOpen) {
+      resetConnectionState();
+    }
+  }, [isSheetOpen]);
 
   return (
     <>
@@ -285,7 +300,7 @@ export function ClipboardCard() {
           </div>
           
            {peerRef.current?.connected ? (
-              <Button onClick={handleDisconnect} variant="destructive">
+              <Button onClick={handleDisconnect} variant="destructive" className="gap-2">
                 <WifiOff />
                 Disconnect
               </Button>
@@ -293,7 +308,7 @@ export function ClipboardCard() {
               <Sheet open={isSheetOpen} onOpenChange={setIsSheetOpen}>
                 <SheetTrigger asChild>
                   <Button>
-                    <Wifi />
+                    <Wifi className="mr-2 h-4 w-4" />
                     Connect to Peer
                   </Button>
                 </SheetTrigger>
@@ -311,49 +326,54 @@ export function ClipboardCard() {
                     </SheetDescription>
                   </SheetHeader>
                   <div className="py-4">
-                    <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-                      <TabsList className="grid w-full grid-cols-2">
-                        <TabsTrigger value="create">Create Connection</TabsTrigger>
-                        <TabsTrigger value="join">Join Connection</TabsTrigger>
-                      </TabsList>
-                      <TabsContent value="create" className="space-y-4 pt-4">
-                          {!shareableLink ? (
-                            <>
-                              <p className="text-sm text-muted-foreground">1. Click the button to generate a shareable connection link.</p>
-                              <Button onClick={handleCreateConnectionLink} disabled={!!shareableLink}>Create Connection Link</Button>
-                            </>
-                          ) : (
-                            <div className='space-y-4'>
-                              <div className="space-y-2">
-                                <Label htmlFor="share-link">2. Copy this link and open it on the other device.</Label>
-                                <div className="flex gap-2">
-                                  <Input id="share-link" readOnly value={shareableLink} className="text-xs"/>
-                                  <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(shareableLink, 'Link')}><Copy className="w-4 h-4"/></Button>
-                                </div>
-                              </div>
-                              <div className="space-y-2">
-                                <Label htmlFor="answer-input">3. Paste the answer from the other device below.</Label>
-                                <Textarea id="answer-input" value={pastedAnswer} onChange={(e) => setPastedAnswer(e.target.value)} placeholder="Paste answer data here..." rows={4} className="text-xs"/>
-                                <Button onClick={handleCompleteConnection} disabled={!pastedAnswer}>Complete Connection</Button>
-                              </div>
+                    {connectionStep === 'initial' && (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4">
+                          <Button variant="outline" onClick={() => setConnectionStep('joining')}>Join Connection</Button>
+                          <Button onClick={handleStartCreating}>Start a New Connection</Button>
+                      </div>
+                    )}
+
+                    {connectionStep === 'creating' && (
+                       <div className='space-y-6 pt-4'>
+                          <div className="space-y-3">
+                            <Label className='font-bold text-base'>Step 1: Share Link</Label>
+                            <p className="text-sm text-muted-foreground">Copy this link and open it on your other device. It contains the connection offer.</p>
+                            <div className="flex gap-2">
+                              <Input id="share-link" readOnly value={shareableLink} className="text-xs" onFocus={(e) => e.target.select()}/>
+                              <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(shareableLink, 'Link')}><Copy className="w-4 h-4"/></Button>
                             </div>
-                          )}
-                      </TabsContent>
-                      <TabsContent value="join" className="space-y-4 pt-4">
-                          <Label htmlFor="paste-offer-input">1. Paste the offer from the first device (or open its link).</Label>
-                          <Textarea id="paste-offer-input" value={pastedOffer} onChange={(e) => setPastedOffer(e.target.value)} placeholder="Offer data will appear here if you use a link..." rows={4} className="text-xs"/>
-                          <Button onClick={handleAcceptOffer} disabled={!pastedOffer || !!answer}>Generate Answer</Button>
-                          {answer && (
-                            <div className="space-y-2">
-                                <Label htmlFor="answer-string">2. Copy this answer and paste it on the first device.</Label>
-                              <div className="flex gap-2">
-                                  <Textarea id="answer-string" readOnly value={answer} rows={4} className="text-xs"/>
-                                  <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(answer, 'Answer')}><Copy className="w-4 h-4"/></Button>
-                              </div>
-                            </div>
-                          )}
-                      </TabsContent>
-                    </Tabs>
+                          </div>
+                          <div className="space-y-3">
+                            <Label className='font-bold text-base'>Step 2: Paste Answer</Label>
+                            <p className="text-sm text-muted-foreground">Once the other device generates an answer, paste it here to complete the connection.</p>
+                            <Textarea id="answer-input" value={pastedAnswer} onChange={(e) => setPastedAnswer(e.target.value)} placeholder="Paste answer data here..." rows={4} className="text-xs"/>
+                            <Button onClick={handleSignalWithAnswer} disabled={!pastedAnswer}>Complete Connection</Button>
+                          </div>
+                        </div>
+                    )}
+                    
+                    {connectionStep === 'joining' && (
+                        <div className='space-y-6 pt-4'>
+                           <div className="space-y-3">
+                            <Label className='font-bold text-base'>Step 1: Provide Offer</Label>
+                            <p className="text-sm text-muted-foreground">Paste the offer from the first device. If you opened a link, this should be pre-filled.</p>
+                            <Textarea id="paste-offer-input" value={pastedOffer} onChange={(e) => setPastedOffer(e.target.value)} placeholder="Offer data from first device..." rows={4} className="text-xs"/>
+                            <Button onClick={handleAcceptOffer} disabled={!pastedOffer || !!generatedAnswer}>Generate Answer</Button>
+                          </div>
+
+                          {generatedAnswer && (
+                            <div className="space-y-3 animate-in fade-in">
+                                <Label className='font-bold text-base'>Step 2: Copy Answer</Label>
+                                <p className="text-sm text-muted-foreground">Copy this generated answer and paste it back into the first device.</p>
+                               <div className="flex gap-2">
+                                  <Textarea id="answer-string" readOnly value={generatedAnswer} rows={4} className="text-xs" onFocus={(e) => e.target.select()}/>
+                                  <Button variant="outline" size="icon" onClick={() => handleCopyToClipboard(generatedAnswer, 'Answer')}><Copy className="w-4 h-4"/></Button>
+                               </div>
+                             </div>
+                           )}
+                        </div>
+                    )}
+
                   </div>
                 </SheetContent>
               </Sheet>
