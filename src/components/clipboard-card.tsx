@@ -88,7 +88,8 @@ export function ClipboardCard() {
         } catch (err) {
             console.error(err);
             toast({ variant: 'destructive', title: 'Signaling Error', description: 'Could not contact signaling server.' });
-            resetConnectionState();
+            resetConnectionState(true);
+            setConnectionStatus('Error');
         }
       }
       // Joiner sends the answer to the server
@@ -102,7 +103,8 @@ export function ClipboardCard() {
         } catch(err) {
             console.error(err);
             toast({ variant: 'destructive', title: 'Signaling Error', description: 'Could not contact signaling server.' });
-            resetConnectionState();
+            resetConnectionState(true);
+            setConnectionStatus('Error');
         }
       }
     });
@@ -120,16 +122,17 @@ export function ClipboardCard() {
     });
 
     newPeer.on('close', () => {
-      setConnectionStatus('Disconnected');
+      if (connectionStatus !== 'Disconnected') {
+        toast({ variant: 'destructive', title: 'Connection closed.' });
+      }
       resetConnectionState();
-      toast({ variant: 'destructive', title: 'Connection closed.' });
     });
 
     newPeer.on('error', (err) => {
       console.error('WebRTC Peer Error:', err);
-      setConnectionStatus('Error');
-      resetConnectionState();
       toast({ variant: 'destructive', title: 'Connection Error', description: 'Something went wrong.' });
+      resetConnectionState(true);
+      setConnectionStatus('Error');
     });
   };
 
@@ -158,7 +161,8 @@ export function ClipboardCard() {
       } catch (err) {
         console.error("Polling error:", err);
         stopPolling();
-        resetConnectionState();
+        resetConnectionState(true);
+        setConnectionStatus('Error');
         toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not get response from peer.' });
       }
     }, 2000); // Poll every 2 seconds
@@ -179,18 +183,18 @@ export function ClipboardCard() {
 
         if (data?.offer) {
             setupPeer(false, code);
-            // The peer instance is created and its listeners attached synchronously within setupPeer.
-            // We can and should signal it immediately without a timeout.
             if (peerRef.current && !peerRef.current.destroyed) {
                 peerRef.current.signal(data.offer);
             }
         } else {
             toast({ variant: 'destructive', title: 'Room not found', description: 'Please check the code and try again.' });
+            resetConnectionState(true);
             setConnectionStatus('Error');
         }
     } catch (err) {
         console.error("Join room error:", err);
         toast({ variant: 'destructive', title: 'Error Joining Room', description: 'Could not connect to the signaling server.' });
+        resetConnectionState(true);
         setConnectionStatus('Error');
     }
   };
@@ -249,12 +253,17 @@ export function ClipboardCard() {
     }
   }
 
-  // Reset connection flow when sheet is closed manually
+  // Reset connection state if the sheet is closed, but only if we're not
+  // in the middle of connecting or already connected. This allows the user
+  // to close the sheet without aborting the connection attempt.
   useEffect(() => {
     if (!isSheetOpen) {
-      resetConnectionState();
+      if (connectionStatus !== 'Connected' && connectionStatus !== 'Connecting...' && connectionStatus !== 'Waiting...') {
+          resetConnectionState();
+      }
     }
-  }, [isSheetOpen]);
+  }, [isSheetOpen, connectionStatus]);
+
 
   return (
     <>
@@ -387,10 +396,15 @@ export function ClipboardCard() {
                                     </div>
                                 </div>
 
-                                <Button onClick={handleCreateRoom} className="w-full" disabled={connectionStatus === 'Connecting...'}>
+                                <Button onClick={handleCreateRoom} className="w-full" disabled={connectionStatus === 'Connecting...' || connectionStatus === 'Waiting...'}>
                                     Create a New Room
                                 </Button>
                             </div>
+                        )}
+                         {connectionStatus === 'Error' && (
+                          <Button onClick={() => resetConnectionState(true)} variant="outline" className="w-full">
+                            Try Again
+                          </Button>
                         )}
                     </div>
                 </SheetContent>
