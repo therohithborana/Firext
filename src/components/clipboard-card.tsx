@@ -165,10 +165,19 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     });
 
     newPeer.on('error', (err: PeerError) => {
-      console.error(`Peer error with ${remotePeerId}:`, err);
-       if (err.code === 'ERR_CONNECTION_FAILURE') {
-         toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not connect to a peer. Please check your network.' });
-       }
+      // "ERR_CONNECTION_FAILURE" is a critical error we should notify the user about.
+      if (err.code === 'ERR_CONNECTION_FAILURE') {
+        console.error(`Peer connection failure with ${remotePeerId}:`, err);
+        toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not connect to a peer. Please check your network.' });
+      } else {
+        // Other errors, like "Close called", are often part of the normal lifecycle
+        // of a connection and don't need to be surfaced as critical errors.
+        // We can log them for debugging purposes without alarming the user.
+        console.log(`Peer event (error) with ${remotePeerId}: ${err.message}`);
+      }
+
+      // The 'close' event will also fire, which handles cleanup.
+      // But to be safe, we can ensure the peer is removed here too.
       if (peersRef.current.has(remotePeerId)) {
         peersRef.current.get(remotePeerId)?.destroy();
         peersRef.current.delete(remotePeerId);
@@ -414,5 +423,3 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     </Card>
   );
 }
-
-    
