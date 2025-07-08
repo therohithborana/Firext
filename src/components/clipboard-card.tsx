@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, ClipboardPaste, Loader2, Wifi, WifiOff, X } from 'lucide-react';
+import { Copy, ClipboardPaste, Loader2, Wifi, WifiOff, X, Trash2 } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Input } from './ui/input';
@@ -140,14 +140,10 @@ export function ClipboardCard() {
       console.error('WebRTC Peer Error:', err);
       if (isManuallyDisconnecting.current) return;
       
-      // If we are the host, a disconnect error is expected when a peer leaves.
-      // The 'close' handler will manage resetting the room to the waiting state.
-      // We log the error and do nothing else, to avoid the race condition.
       if (isInitiator) {
         return;
       }
       
-      // If we are a participant, an error is fatal.
       toast({ variant: 'destructive', title: 'Connection Error', description: 'The connection was lost.' });
       resetConnectionState();
       setConnectionStatus('Error');
@@ -155,9 +151,14 @@ export function ClipboardCard() {
   };
 
   const handleCreateRoom = () => {
-    const newRoomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+    let newRoomCode = '';
+    for (let i = 0; i < 6; i++) {
+        newRoomCode += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+    }
     setRoomCode(newRoomCode);
     setConnectionStatus('Waiting...');
+    setIsConnecting(true);
     setupPeer(true, newRoomCode);
   };
 
@@ -186,12 +187,13 @@ export function ClipboardCard() {
   };
   
   const handleJoinRoom = async () => {
-    const code = inputRoomCode.trim().toUpperCase();
+    const code = inputRoomCode.trim().toLowerCase();
     if (!code) {
       toast({ variant: 'destructive', title: 'Please enter a room code.' });
       return;
     }
     setRoomCode(code);
+    setIsConnecting(true);
     setConnectionStatus('Connecting...');
     try {
         const res = await fetch(`/api/webrtc/signal?room=${code}`);
@@ -206,11 +208,13 @@ export function ClipboardCard() {
         } else {
             toast({ variant: 'destructive', title: 'Room not found', description: 'Please check the code and try again.' });
             setConnectionStatus('Error');
+            setIsConnecting(false);
         }
     } catch (err) {
         console.error("Join room error:", err);
         toast({ variant: 'destructive', title: 'Error Joining Room', description: 'Could not connect to the signaling server.' });
         setConnectionStatus('Error');
+        setIsConnecting(false);
     }
   };
 
@@ -231,6 +235,14 @@ export function ClipboardCard() {
     toast({ title: 'Copied to clipboard!' });
   };
   
+  const handleClearClipboard = () => {
+    const text = '';
+    setInputText(text);
+    if (peerRef.current?.connected) {
+      peerRef.current.send(text);
+    }
+  };
+
   const getStatusBadgeVariant = () => {
     switch(connectionStatus) {
       case 'Connected': return 'default';
@@ -248,8 +260,6 @@ export function ClipboardCard() {
         <h3 className="text-xl font-semibold">Connect to a Peer</h3>
         <p className="text-muted-foreground">
           Create a room and share the code, or join an existing room.
-          <br/>
-          <span className='font-semibold'>Status: {connectionStatus}</span>
         </p>
       </div>
         {connectionStatus === 'Waiting...' && roomCode ? (
@@ -274,8 +284,8 @@ export function ClipboardCard() {
                         <Input 
                             id="join-code" 
                             value={inputRoomCode} 
-                            onChange={(e) => setInputRoomCode(e.target.value.toUpperCase())} 
-                            placeholder="Enter Room Code" 
+                            onChange={(e) => setInputRoomCode(e.target.value.toLowerCase())} 
+                            placeholder="Enter room code" 
                             onKeyDown={(e) => e.key === 'Enter' && handleJoinRoom()}
                             disabled={connectionStatus === 'Connecting...'}
                         />
@@ -317,9 +327,11 @@ export function ClipboardCard() {
       />
     </div>
   )
+  
+  const showClipboard = !isConnecting && (connectionStatus === 'Connected' || connectionStatus === 'Disconnected');
 
   return (
-    <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-background/50 backdrop-blur-sm">
+    <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-card/80 backdrop-blur-sm">
       <CardHeader>
         <div className="flex items-center justify-between">
             <div className='flex items-center gap-3'>
@@ -340,7 +352,7 @@ export function ClipboardCard() {
         </div>
       </CardHeader>
       <CardContent>
-        {isConnecting ? renderConnectionView() : renderClipboardView()}
+        {showClipboard ? renderClipboardView() : renderConnectionView()}
       </CardContent>
       <CardFooter className="flex flex-col sm:flex-row gap-2 justify-between bg-muted/30 py-4 px-6">
         {isConnecting ? (
@@ -354,6 +366,10 @@ export function ClipboardCard() {
               <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText}>
                 <Copy className="mr-2 h-4 w-4" />
                 Copy
+              </Button>
+              <Button variant="outline" onClick={handleClearClipboard} disabled={!inputText}>
+                <Trash2 className="mr-2 h-4 w-4" />
+                Clear
               </Button>
             </div>
             
@@ -381,5 +397,3 @@ export function ClipboardCard() {
     </Card>
   );
 }
-
-    
