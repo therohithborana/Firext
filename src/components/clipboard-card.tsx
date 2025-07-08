@@ -9,7 +9,7 @@ import QRCode from 'react-qr-code';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { useToast } from '@/hooks/use-toast';
-import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste, QrCode } from 'lucide-react';
+import { Copy, Users, Wifi, WifiOff, Loader2, Trash2, ClipboardPaste, QrCode, Link2 } from 'lucide-react';
 import { Badge } from './ui/badge';
 import { Label } from './ui/label';
 import { Button } from './ui/button';
@@ -87,6 +87,9 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
 
     newPeer.on('error', (err: PeerError) => {
       console.error(`Peer error with ${remotePeerId}:`, err);
+       if (err.code === 'ERR_CONNECTION_FAILURE') {
+         toast({ variant: 'destructive', title: 'Connection Failed', description: 'Could not connect to a peer. Please check your network.' });
+       }
       if (peersRef.current.has(remotePeerId)) {
         peersRef.current.get(remotePeerId)?.destroy();
         peersRef.current.delete(remotePeerId);
@@ -96,7 +99,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     if (offer) {
       newPeer.signal(offer);
     }
-  }, [roomCode]);
+  }, [roomCode, toast]);
 
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -125,6 +128,12 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
     if (!text) return;
     await navigator.clipboard.writeText(text);
     toast({ title: 'Copied to clipboard!' });
+  };
+  
+  const handleCopyUrl = async () => {
+    if (!currentUrl) return;
+    await navigator.clipboard.writeText(currentUrl);
+    toast({ title: 'Room URL copied!' });
   };
   
   const disconnect = () => {
@@ -188,7 +197,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
         disconnect();
       }
     }, 2000);
-  }, [roomCode, connectToPeer]);
+  }, [roomCode, connectToPeer, toast]);
   
   useEffect(() => {
     startPolling();
@@ -221,7 +230,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
   return (
     <Card className="w-full max-w-2xl shadow-2xl animate-in fade-in zoom-in-95 border-primary/20 bg-card/80 backdrop-blur-sm">
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
             <div className='flex items-center gap-3'>
                 <div className="p-3 rounded-lg bg-primary/10">
                     <ClipboardPaste className="w-6 h-6 text-primary" />
@@ -245,7 +254,7 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                     <CardDescription>Cross-device clipboard powered by WebRTC.</CardDescription>
                 </div>
             </div>
-             <div className="text-right">
+             <div className="text-right w-full sm:w-auto">
                 <Badge variant={getStatusBadgeVariant()} className="text-sm">
                     {getStatusIcon()}
                     {connectionStatus}
@@ -257,6 +266,20 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
                     </div>
                 )}
             </div>
+        </div>
+        <div className="mt-4 flex items-center gap-2 rounded-md bg-muted/50 p-2 text-sm">
+            <Link2 className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+            <input
+                type="text"
+                readOnly
+                value={currentUrl}
+                className="flex-1 truncate bg-transparent font-mono text-muted-foreground outline-none"
+                aria-label="Room URL"
+            />
+            <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0" onClick={handleCopyUrl} disabled={!currentUrl}>
+                <span className="sr-only">Copy URL</span>
+                <Copy className="h-4 w-4" />
+            </Button>
         </div>
       </CardHeader>
       <CardContent>
@@ -272,12 +295,12 @@ export function ClipboardCard({ roomCode }: { roomCode: string }) {
             />
         </div>
       </CardContent>
-      <CardFooter className="flex flex-row gap-2 justify-start bg-muted/30 py-4 px-6">
-        <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText}>
+      <CardFooter className="flex flex-col sm:flex-row items-stretch gap-2 justify-start bg-muted/30 py-4 px-6">
+        <Button onClick={() => handleCopyToClipboard(inputText)} disabled={!inputText} className="w-full sm:w-auto">
             <Copy className="mr-2 h-4 w-4" />
             Copy
         </Button>
-        <Button variant="outline" onClick={handleClearClipboard} disabled={!inputText}>
+        <Button variant="outline" onClick={handleClearClipboard} disabled={!inputText} className="w-full sm:w-auto">
             <Trash2 className="mr-2 h-4 w-4" />
             Clear
         </Button>
